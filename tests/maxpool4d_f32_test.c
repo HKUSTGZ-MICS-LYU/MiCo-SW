@@ -40,11 +40,11 @@ int main(){
 
     // Warming Up
     printf("Warming Up\n");
-    MiCo_maxpool4d_f32(&y, &x, K, S);
+    MiCo_maxpool4d_f32(&y, &x, K, S, 0);
     printf("Warming Up Done\n");
 
     start_time = MiCo_time();
-    MiCo_maxpool4d_f32(&y, &x, K, S);
+    MiCo_maxpool4d_f32(&y, &x, K, S, 0);
     end_time = MiCo_time();
     printf("MiCo Time: %ld\n",end_time - start_time);
 

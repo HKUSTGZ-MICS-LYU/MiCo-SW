@@ -1,5 +1,8 @@
 # Template MiCo Project
 
+[![Build](https://github.com/HKUSTGZ-MICS-LYU/MiCo-SW/actions/workflows/build.yml/badge.svg)](https://github.com/HKUSTGZ-MICS-LYU/MiCo-SW/actions/workflows/build.yml)
+[![Test](https://github.com/HKUSTGZ-MICS-LYU/MiCo-SW/actions/workflows/test.yml/badge.svg)](https://github.com/HKUSTGZ-MICS-LYU/MiCo-SW/actions/workflows/test.yml)
+
 If you are trying to compile RISC-V binary, please note that the default Makefile are mostly tested on the pre-built GNU toolchain from sifive/freedom-tools with GCC 10.1 (https://github.com/sifive/freedom-tools/releases).
 
 You can download it (Ubuntu version on X86) directly by:
