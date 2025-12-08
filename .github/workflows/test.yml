@@ -22,14 +22,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential gcc make
     
-    - name: Build library
-      run: |
-        make clean
-        make compile || true
-    
     - name: Build and run tests
       run: |
-        # Build test object files first
+        # Build test object files
         make clean
         mkdir -p build
         for src in MiCo-Lib/src/*.c; do
@@ -44,10 +39,15 @@ jobs:
         # Build and run each test
         TEST_COUNT=0
         PASS_COUNT=0
+        CFLAGS="-O3 -DUSE_HOST"
+        INCLUDES="-I./MiCo-Lib/include -I./MiCo-Lib/test -I./"
+        LDFLAGS="-lm"
+        OBJ_FILES="build/MiCo-Lib/src/*.o build/MiCo-Lib/src/mico/*.o"
+        
         for test in matmul_test.c bitconv2d_test.c bitlinear_test.c bnmatmul_test.c quant_test.c avgpool4d_f32_test.c maxpool4d_f32_test.c; do
           if [ -f "$test" ]; then
             echo "Building $test..."
-            if gcc -O3 -DUSE_HOST -I./MiCo-Lib/include -I./MiCo-Lib/test -I./ build/MiCo-Lib/src/*.o build/MiCo-Lib/src/mico/*.o "$test" -o "${test%.c}.elf" -lm 2>&1; then
+            if gcc $CFLAGS $INCLUDES $OBJ_FILES "$test" -o "${test%.c}.elf" $LDFLAGS 2>&1; then
               echo "Running $test..."
               TEST_COUNT=$((TEST_COUNT + 1))
               if timeout 30s ./"${test%.c}.elf"; then
