@@ -51,21 +51,22 @@ jobs:
           if [ -f "$test" ]; then
             echo "Building $test..."
             BUILD_LOG=$(mktemp)
-            if gcc $CFLAGS $INCLUDES $OBJ_FILES "$test" -o "${test%.c}.elf" $LDFLAGS 2>&1 | tee "$BUILD_LOG"; then
-              if [ ${PIPESTATUS[0]} -eq 0 ]; then
-                echo "Running $test..."
-                TEST_COUNT=$((TEST_COUNT + 1))
-                if timeout 30s ./"${test%.c}.elf"; then
-                  echo "✓ Test ${test%.c} passed"
-                  PASS_COUNT=$((PASS_COUNT + 1))
-                else
-                  echo "✗ Test ${test%.c} failed with exit code $?"
-                  FAIL_COUNT=$((FAIL_COUNT + 1))
-                fi
+            gcc $CFLAGS $INCLUDES $OBJ_FILES "$test" -o "${test%.c}.elf" $LDFLAGS 2>&1 | tee "$BUILD_LOG"
+            BUILD_EXIT=${PIPESTATUS[0]}
+            
+            if [ $BUILD_EXIT -eq 0 ]; then
+              echo "Running $test..."
+              TEST_COUNT=$((TEST_COUNT + 1))
+              if timeout 30s ./"${test%.c}.elf"; then
+                echo "✓ Test ${test%.c} passed"
+                PASS_COUNT=$((PASS_COUNT + 1))
               else
-                echo "⚠ Failed to build $test - Compilation errors:"
-                cat "$BUILD_LOG"
+                echo "✗ Test ${test%.c} failed with exit code $?"
+                FAIL_COUNT=$((FAIL_COUNT + 1))
               fi
+            else
+              echo "⚠ Failed to build $test - Compilation errors:"
+              cat "$BUILD_LOG"
             fi
             rm -f "$BUILD_LOG"
           fi
