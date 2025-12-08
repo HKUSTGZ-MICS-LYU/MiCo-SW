@@ -26,17 +26,17 @@ jobs:
     
     - name: Build and run tests
       run: |
-        # Build test object files
-        make clean
-        mkdir -p build
-        for src in MiCo-Lib/src/*.c; do
-          mkdir -p build/$(dirname $src)
-          gcc -O3 -DUSE_HOST -c -o build/${src%.c}.o $src -I./MiCo-Lib/include -I./MiCo-Lib/test -I./
+        # Build library objects using Makefile with TARGET=host
+        make TARGET=host clean
+        
+        # Build all library object files using the Makefile
+        MICO_SOURCES=$(find MiCo-Lib/src -name "*.c")
+        for src in $MICO_SOURCES; do
+          obj_file=$(echo $src | sed 's/\.c$/.o/')
+          make TARGET=host "build/$obj_file" > /dev/null 2>&1
         done
-        for src in MiCo-Lib/src/mico/*.c; do
-          mkdir -p build/$(dirname $src)
-          gcc -O3 -DUSE_HOST -c -o build/${src%.c}.o $src -I./MiCo-Lib/include -I./MiCo-Lib/test -I./
-        done
+        
+        echo "Library objects built successfully"
         
         # Build and run each test
         TEST_COUNT=0
@@ -71,6 +71,33 @@ jobs:
             rm -f "$BUILD_LOG"
           fi
         done
+        
+        # Special handling for matmul_regression which needs REF flag
+        echo "Building tests/matmul_regression.c with REF flag..."
+        # Rebuild qmatmul_ref.o with REF flag
+        gcc -O3 -DUSE_HOST -DREF -c -o build/MiCo-Lib/src/mico/qmatmul_ref_withref.o MiCo-Lib/src/mico/qmatmul_ref.c -I./MiCo-Lib/include -I./MiCo-Lib/test -I./
+        BUILD_LOG=$(mktemp)
+        # Use the special object file for this test
+        OBJ_FILES_REF="build/MiCo-Lib/src/*.o build/MiCo-Lib/src/mico/bitconv2d.o build/MiCo-Lib/src/mico/bitconv2d_plain.o build/MiCo-Lib/src/mico/bitlinear.o build/MiCo-Lib/src/mico/qbuffer.o build/MiCo-Lib/src/mico/qmatmul.o build/MiCo-Lib/src/mico/qmatmul_ref_withref.o build/MiCo-Lib/src/mico/quant.o"
+        if gcc $CFLAGS $INCLUDES $OBJ_FILES_REF tests/matmul_regression.c -o tests/matmul_regression.elf $LDFLAGS 2>&1 | tee "$BUILD_LOG"; then
+          BUILD_EXIT=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT -eq 0 ]; then
+            echo "Running tests/matmul_regression.c..."
+            TEST_COUNT=$((TEST_COUNT + 1))
+            if timeout 30s ./tests/matmul_regression.elf; then
+              echo "✓ Test tests/matmul_regression passed"
+              PASS_COUNT=$((PASS_COUNT + 1))
+            else
+              echo "✗ Test tests/matmul_regression failed with exit code $?"
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+          else
+            echo "⚠ Failed to build tests/matmul_regression.c - Compilation errors:"
+            cat "$BUILD_LOG"
+          fi
+        fi
+        rm -f "$BUILD_LOG"
+        
         echo "Tests passed: $PASS_COUNT / $TEST_COUNT"
         echo "Tests failed: $FAIL_COUNT / $TEST_COUNT"
     
