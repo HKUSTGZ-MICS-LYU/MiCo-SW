@@ -26,29 +26,27 @@ jobs:
     
     - name: Build and run tests
       run: |
-        # Build and run each test using the Makefile
+        # Build and run each test using the Makefile with MAIN override
         TEST_COUNT=0
         PASS_COUNT=0
         FAIL_COUNT=0
         
-        # List of regular tests
-        REGULAR_TESTS="tests/matmul_test.c tests/bitconv2d_test.c tests/bitlinear_test.c tests/bnmatmul_test.c tests/quant_test.c tests/avgpool4d_f32_test.c tests/maxpool4d_f32_test.c"
+        # List of regular tests (without .c extension)
+        REGULAR_TESTS="matmul_test bitconv2d_test bitlinear_test bnmatmul_test quant_test avgpool4d_f32_test maxpool4d_f32_test"
         
-        for test in $REGULAR_TESTS; do
-          if [ -f "$test" ]; then
-            test_name=$(basename "$test" .c)
+        for test_name in $REGULAR_TESTS; do
+          if [ -f "tests/${test_name}.c" ]; then
             echo "Building and running $test_name..."
             
-            # Copy test to main.c and build using Makefile
-            cp "$test" main.c
             BUILD_LOG=$(mktemp)
-            
-            if make TARGET=host clean > /dev/null 2>&1 && make TARGET=host main.elf 2>&1 | tee "$BUILD_LOG"; then
+            # Build using Makefile with MAIN override
+            if make TARGET=host MAIN=tests/$test_name clean > /dev/null 2>&1 && \
+               make TARGET=host MAIN=tests/$test_name tests/${test_name}.elf 2>&1 | tee "$BUILD_LOG"; then
               BUILD_EXIT=${PIPESTATUS[1]}
               
               if [ $BUILD_EXIT -eq 0 ]; then
                 TEST_COUNT=$((TEST_COUNT + 1))
-                if timeout 30s ./main.elf > /dev/null 2>&1; then
+                if timeout 30s ./tests/${test_name}.elf > /dev/null 2>&1; then
                   echo "✓ Test $test_name passed"
                   PASS_COUNT=$((PASS_COUNT + 1))
                 else
@@ -67,15 +65,15 @@ jobs:
         # Special handling for matmul_regression with OPT=ref
         if [ -f "tests/matmul_regression.c" ]; then
           echo "Building and running matmul_regression with OPT=ref..."
-          cp tests/matmul_regression.c main.c
           BUILD_LOG=$(mktemp)
           
-          if make TARGET=host OPT=ref clean > /dev/null 2>&1 && make TARGET=host OPT=ref main.elf 2>&1 | tee "$BUILD_LOG"; then
+          if make TARGET=host OPT=ref MAIN=tests/matmul_regression clean > /dev/null 2>&1 && \
+             make TARGET=host OPT=ref MAIN=tests/matmul_regression tests/matmul_regression.elf 2>&1 | tee "$BUILD_LOG"; then
             BUILD_EXIT=${PIPESTATUS[1]}
             
             if [ $BUILD_EXIT -eq 0 ]; then
               TEST_COUNT=$((TEST_COUNT + 1))
-              if timeout 30s ./main.elf > /dev/null 2>&1; then
+              if timeout 30s ./tests/matmul_regression.elf > /dev/null 2>&1; then
                 echo "✓ Test matmul_regression passed"
                 PASS_COUNT=$((PASS_COUNT + 1))
               else
@@ -99,6 +97,6 @@ jobs:
       with:
         name: test-results
         path: |
-          main.elf
+          tests/*.elf
           build/
         retention-days: 7
