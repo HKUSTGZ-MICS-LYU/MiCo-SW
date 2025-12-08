@@ -47,7 +47,7 @@ jobs:
         LDFLAGS="-lm"
         OBJ_FILES="build/MiCo-Lib/src/*.o build/MiCo-Lib/src/mico/*.o"
         
-        for test in matmul_test.c bitconv2d_test.c bitlinear_test.c bnmatmul_test.c quant_test.c avgpool4d_f32_test.c maxpool4d_f32_test.c; do
+        for test in tests/matmul_test.c tests/bitconv2d_test.c tests/bitlinear_test.c tests/bnmatmul_test.c tests/quant_test.c tests/avgpool4d_f32_test.c tests/maxpool4d_f32_test.c; do
           if [ -f "$test" ]; then
             echo "Building $test..."
             BUILD_LOG=$(mktemp)
@@ -80,5 +80,5 @@ jobs:
       with:
         name: test-results
         path: |
-          *.elf
+          tests/*.elf
         retention-days: 7
