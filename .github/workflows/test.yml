@@ -41,6 +41,7 @@ jobs:
         # Build and run each test
         TEST_COUNT=0
         PASS_COUNT=0
+        FAIL_COUNT=0
         CFLAGS="-O3 -DUSE_HOST"
         INCLUDES="-I./MiCo-Lib/include -I./MiCo-Lib/test -I./"
         LDFLAGS="-lm"
@@ -49,21 +50,28 @@ jobs:
         for test in matmul_test.c bitconv2d_test.c bitlinear_test.c bnmatmul_test.c quant_test.c avgpool4d_f32_test.c maxpool4d_f32_test.c; do
           if [ -f "$test" ]; then
             echo "Building $test..."
-            if gcc $CFLAGS $INCLUDES $OBJ_FILES "$test" -o "${test%.c}.elf" $LDFLAGS 2>&1; then
-              echo "Running $test..."
-              TEST_COUNT=$((TEST_COUNT + 1))
-              if timeout 30s ./"${test%.c}.elf"; then
-                echo "✓ Test ${test%.c} passed"
-                PASS_COUNT=$((PASS_COUNT + 1))
+            BUILD_LOG=$(mktemp)
+            if gcc $CFLAGS $INCLUDES $OBJ_FILES "$test" -o "${test%.c}.elf" $LDFLAGS 2>&1 | tee "$BUILD_LOG"; then
+              if [ ${PIPESTATUS[0]} -eq 0 ]; then
+                echo "Running $test..."
+                TEST_COUNT=$((TEST_COUNT + 1))
+                if timeout 30s ./"${test%.c}.elf"; then
+                  echo "✓ Test ${test%.c} passed"
+                  PASS_COUNT=$((PASS_COUNT + 1))
+                else
+                  echo "✗ Test ${test%.c} failed with exit code $?"
+                  FAIL_COUNT=$((FAIL_COUNT + 1))
+                fi
               else
-                echo "✗ Test ${test%.c} failed with exit code $?"
+                echo "⚠ Failed to build $test - Compilation errors:"
+                cat "$BUILD_LOG"
               fi
-            else
-              echo "⚠ Failed to build $test (skipping)"
             fi
+            rm -f "$BUILD_LOG"
           fi
         done
         echo "Tests passed: $PASS_COUNT / $TEST_COUNT"
+        echo "Tests failed: $FAIL_COUNT / $TEST_COUNT"
     
     - name: Upload test results
       if: always()
