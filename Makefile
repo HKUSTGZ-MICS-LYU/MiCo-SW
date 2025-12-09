@@ -57,6 +57,7 @@ $(BUILD)/%.o: %.S | $(BUILD)
 	@$(CC) $(CFLAGS) -c -o $@ $< $(addprefix -I,$(INCLUDES))
 
 $(MAIN).elf: $(OBJS) $(MAIN).c
+	@mkdir -p $(dir $@)
 	@echo "Compiling Flags $(CFLAGS)"
 	@echo "Linker Flags $(LDFLAGS)"
 	@echo "Linking Executable (main)..."
@@ -67,8 +68,8 @@ $(MAIN).asm : $(MAIN).elf
 	@$(OBJDUMP) -d $(MAIN).elf > $(MAIN).asm
 
 $(BUILD):
-	mkdir -p $(BUILD)
-
+	@mkdir -p $(dir $@)
+	
 clean:
 	@rm -rf $(BUILD)
 	@rm -f *.elf *.asm
@@ -78,7 +79,10 @@ debug: recompile
 
 compile: $(MAIN).asm
 
-recompile: clean compile
+recompile:
+	@$(MAKE) clean
+	@$(MAKE) compile
+
 
 run-host: $(MAIN).elf
 	./$<
