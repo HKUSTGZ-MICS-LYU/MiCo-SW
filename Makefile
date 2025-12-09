@@ -81,6 +81,9 @@ compile: $(MAIN).asm
 
 recompile: clean compile
 
+# Force sequential execution of recompile to avoid race conditions with parallel builds
+.NOTPARALLEL: recompile
+
 run-host: $(MAIN).elf
 	./$<
 
