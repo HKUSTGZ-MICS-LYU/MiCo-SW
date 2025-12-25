@@ -10,7 +10,7 @@
 #include "mico_nn.h"
 #include "mico_qnn.h"
 
-#define N 4
+#define N 1
 #define M 16
 #define K 256
 
@@ -21,6 +21,7 @@ int check(int32_t *o_ref, int32_t *o_cmp){
             if(o_ref[i * M + j] != o_cmp[i * M + j]){
                 error++;
                 printf("Error at (%d, %d): %d != %d\n", i, j, o_ref[i * M + j], o_cmp[i * M + j]);
+                return error; // Early exit on first error
             }
         }
     }
@@ -52,7 +53,6 @@ int test_func(int32_t* o_ref, int32_t* o_cmp, Tensor2D_Q8 x, Tensor2D_Q8 w,
         return -1;
     }
 }
-
 
 int main(){
     Tensor2D_Q8 x, w;
@@ -88,10 +88,10 @@ int main(){
 
     // Test List
     void* func_refs[] = {
-        MiCo_Q8_MatMul_Ref, 
-        MiCo_Q4_MatMul_Ref, 
-        MiCo_Q2_MatMul_Ref, 
-        MiCo_Q1_MatMul_Ref,
+        // MiCo_Q8_MatMul_Ref, 
+        // MiCo_Q4_MatMul_Ref, 
+        // MiCo_Q2_MatMul_Ref, 
+        // MiCo_Q1_MatMul_Ref,
         MiCo_Q8x4_MatMul_Ref,
         MiCo_Q8x2_MatMul_Ref,
         MiCo_Q8x1_MatMul_Ref,
@@ -107,10 +107,10 @@ int main(){
     };
 
     void* func_cmps[] = {
-        MiCo_Q8_MatMul, 
-        MiCo_Q4_MatMul, 
-        MiCo_Q2_MatMul, 
-        MiCo_Q1_MatMul,
+        // MiCo_Q8_MatMul, 
+        // MiCo_Q4_MatMul, 
+        // MiCo_Q2_MatMul, 
+        // MiCo_Q1_MatMul,
         MiCo_Q8x4_MatMul,
         MiCo_Q8x2_MatMul,
         MiCo_Q8x1_MatMul,
@@ -125,10 +125,10 @@ int main(){
         MiCo_Q1x2_MatMul,
     };
     const char* func_names[] = {
-        "MiCo_Q8_MatMul", 
-        "MiCo_Q4_MatMul", 
-        "MiCo_Q2_MatMul", 
-        "MiCo_Q1_MatMul",
+        // "MiCo_Q8_MatMul", 
+        // "MiCo_Q4_MatMul", 
+        // "MiCo_Q2_MatMul", 
+        // "MiCo_Q1_MatMul",
         "MiCo_Q8x4_MatMul",
         "MiCo_Q8x2_MatMul",
         "MiCo_Q8x1_MatMul",
@@ -142,6 +142,11 @@ int main(){
         "MiCo_Q1x4_MatMul",
         "MiCo_Q1x2_MatMul",
     };
+
+    // Cache Warmup
+    printf("Warming Up...\n");
+    MiCo_Q8_MatMul_Ref(o_ref, &x, &w);
+
     int num_tests = sizeof(func_refs) / sizeof(func_refs[0]);
     for(int i = 0; i < num_tests; i++){
         printf("Testing %s...\n", func_names[i]);

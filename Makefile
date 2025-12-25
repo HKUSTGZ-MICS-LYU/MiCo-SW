@@ -19,6 +19,10 @@ LDFLAGS = -lm
 # (Optional) Address Sanitizer
 # CFLAGS += -fsanitize=address -static-libasan
 
+# (Optional) Section GC
+CFLAGS += -ffunction-sections -fdata-sections
+LDFLAGS += -Wl,--gc-sections
+
 INCLUDES = $(MICO_INCLUDES) ./
 
 BUILD = build
