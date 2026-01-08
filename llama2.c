@@ -4,7 +4,7 @@
 #include <stdio.h>
 #endif
 
-#ifdef RISCV_ROCKET
+#ifdef USE_CHIPYARD
 #include <riscv-pk/encoding.h>
 #endif
 

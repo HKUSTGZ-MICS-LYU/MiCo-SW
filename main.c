@@ -4,7 +4,7 @@
 #include <stdio.h>
 #endif
 
-#ifdef RISCV_ROCKET
+#ifdef USE_CHIPYARD
 #include <riscv-pk/encoding.h>
 #endif
 
@@ -24,6 +24,10 @@
 
 #ifdef CIFAR100
 #include "test_cifar100.h"
+#endif
+
+#ifdef SPEECHCOMMANDS
+#include "test_speechcommands.h"
 #endif
 
 int main(){
