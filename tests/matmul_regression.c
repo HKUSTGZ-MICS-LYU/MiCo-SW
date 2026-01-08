@@ -11,8 +11,8 @@
 #include "mico_qnn.h"
 
 #define N 1
-#define M 16
-#define K 256
+#define M 4096
+#define K 4096
 
 int check(int32_t *o_ref, int32_t *o_cmp){
     int32_t error = 0;
@@ -20,7 +20,7 @@ int check(int32_t *o_ref, int32_t *o_cmp){
         for (int j = 0; j < M; j++) {
             if(o_ref[i * M + j] != o_cmp[i * M + j]){
                 error++;
-                printf("Error at (%d, %d): %d != %d\n", i, j, o_ref[i * M + j], o_cmp[i * M + j]);
+                printf("Error at (%d, %d): ref %d != cmp %d\n", i, j, o_ref[i * M + j], o_cmp[i * M + j]);
                 return error; // Early exit on first error
             }
         }
@@ -57,7 +57,7 @@ int test_func(int32_t* o_ref, int32_t* o_cmp, Tensor2D_Q8 x, Tensor2D_Q8 w,
 int main(){
     Tensor2D_Q8 x, w;
 
-    size_t alignment = 32; // N-byte alignment for SIMD
+    size_t alignment = 128; // N-byte alignment for SIMD
 
     void *x_raw = malloc(N*K*sizeof(int8_t) + alignment - 1);
     void *w_raw = malloc(K*M*sizeof(int8_t) + alignment - 1);
@@ -88,10 +88,10 @@ int main(){
 
     // Test List
     void* func_refs[] = {
-        // MiCo_Q8_MatMul_Ref, 
-        // MiCo_Q4_MatMul_Ref, 
-        // MiCo_Q2_MatMul_Ref, 
-        // MiCo_Q1_MatMul_Ref,
+        MiCo_Q8_MatMul_Ref, 
+        MiCo_Q4_MatMul_Ref, 
+        MiCo_Q2_MatMul_Ref, 
+        MiCo_Q1_MatMul_Ref,
         MiCo_Q8x4_MatMul_Ref,
         MiCo_Q8x2_MatMul_Ref,
         MiCo_Q8x1_MatMul_Ref,
@@ -107,10 +107,10 @@ int main(){
     };
 
     void* func_cmps[] = {
-        // MiCo_Q8_MatMul, 
-        // MiCo_Q4_MatMul, 
-        // MiCo_Q2_MatMul, 
-        // MiCo_Q1_MatMul,
+        MiCo_Q8_MatMul, 
+        MiCo_Q4_MatMul, 
+        MiCo_Q2_MatMul, 
+        MiCo_Q1_MatMul,
         MiCo_Q8x4_MatMul,
         MiCo_Q8x2_MatMul,
         MiCo_Q8x1_MatMul,
@@ -125,10 +125,10 @@ int main(){
         MiCo_Q1x2_MatMul,
     };
     const char* func_names[] = {
-        // "MiCo_Q8_MatMul", 
-        // "MiCo_Q4_MatMul", 
-        // "MiCo_Q2_MatMul", 
-        // "MiCo_Q1_MatMul",
+        "MiCo_Q8_MatMul", 
+        "MiCo_Q4_MatMul", 
+        "MiCo_Q2_MatMul", 
+        "MiCo_Q1_MatMul",
         "MiCo_Q8x4_MatMul",
         "MiCo_Q8x2_MatMul",
         "MiCo_Q8x1_MatMul",
