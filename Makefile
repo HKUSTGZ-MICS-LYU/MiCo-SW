@@ -77,6 +77,7 @@ $(BUILD):
 clean:
 	@rm -rf $(BUILD)
 	@rm -f *.elf *.asm
+	@rm -f tests/*.elf tests/*.asm
 
 debug: CFLAGS += -DDEBUG
 debug: recompile
