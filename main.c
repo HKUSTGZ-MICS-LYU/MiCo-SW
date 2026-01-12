@@ -47,6 +47,15 @@ int main(){
 
         printf("Set Input Data\n");
         model.x.data = test_input[t];
+        #if defined(USE_ALT_LAYOUT) && \
+            !(defined(MLP_MNIST) || defined(SPEECHCOMMANDS))
+            __NCHW_to_NHWC_inplace(model.x.data, 
+                model.x.shape[0], // N
+                model.x.shape[3], // C
+                model.x.shape[1], // H
+                model.x.shape[2]  // W
+            );
+        #endif
 
         printf("Forward Model\n");
         model_forward(&model);
