@@ -20,6 +20,14 @@
 
 #include "llama2_config.h"
 
+#ifndef CONTEXT_LEN
+#define CONTEXT_LEN 32
+#endif
+
+#ifndef LLAMA_LAYERS
+#define LLAMA_LAYERS 6
+#endif
+
 #ifdef QUANTIZED
 typedef Tensor2D_Q8 DataType;
 typedef qbyte WeightType;
@@ -132,6 +140,7 @@ long time_in_ms() {
 
 void malloc_run_state(RunState* s, Config* p) {
     // we calloc instead of malloc to keep valgrind happy
+    printf("Start Allocating Buffers\n");
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = p->dim / p->n_heads;
     int head_pairs = head_size / 2;
@@ -148,13 +157,13 @@ void malloc_run_state(RunState* s, Config* p) {
     s->v = calloc(kv_dim, sizeof(float));
     s->key_scales = calloc(p->n_layers * p->seq_len, sizeof(float));
     s->value_scales = calloc(p->n_layers * p->seq_len, sizeof(float));
-    printf("Alloacte KV Quant Buffer + Scales of size %ld Bytes...\n",
+    printf("Allocate KV Quant Buffer + Scales of size %ld Bytes...\n",
         (kv_dim * 2 + p->n_layers * p->seq_len * 2) * sizeof(float));
     #endif
     s->key_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(kv_type));
     s->value_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(kv_type));
     
-    printf("Alloacte KV Cache of size %ld KB...\n",
+    printf("Allocate KV Cache of size %ld KB...\n",
         (p->n_layers * p->seq_len * kv_dim * sizeof(kv_type)) / 1024);
     
     
@@ -232,7 +241,6 @@ size_t init_quant_weight(DataType* w, char* ptr, int n_layers, int n, int m){
     for (int i = 0; i < n_layers; i++) {
         w[i].shape[0] = n;
         w[i].shape[1] = m;
-        ptr += sizeof(float);
         w[i].data = (WeightType*) ptr;
         ptr += n * m * sizeof(WeightType) / (8 / w[i].wq);
     }
@@ -371,7 +379,6 @@ void memory_map_weights(
     #else
     ptr += init_weight(w->w3, ptr, n_layers, p->hidden_dim, p->dim);
     #endif
-
     if(shared_weights){
         #ifdef QUANTIZED
         // Use INT8 for the final classifier to save memory
@@ -432,14 +439,18 @@ void read_checkpoint(Config* config, TransformerWeights* weights, TransformerQSc
     int shared_weights = config->vocab_size > 0 ? 1 : 0;
     config->vocab_size = abs(config->vocab_size);
     // memory map the Transformer weights into the data pointer
+    printf("Initializing Weights...\n");
     void* weights_ptr = (char*)llama_model_start + header_size; // skip header bytes. char is 1 byte
     weights_ptr = init_float_params(weights, config, weights_ptr, shared_weights);
     #ifdef QUANTIZED
+    printf("Initializing Quantized Weights...\n");
     weights_ptr = init_qschemes(qsheme, config, weights_ptr);
     unsigned char pad = *(unsigned char*)weights_ptr;
     weights_ptr += pad;
     #endif
+    printf("Mapping Weights...\n");
     memory_map_weights(weights, qsheme, config, weights_ptr, shared_weights);
+    printf("Checkpoint Loaded...\n");
 }
 
 // llama2 tokenizer
@@ -712,6 +723,9 @@ float* forward(Transformer* transformer, int token, int pos) {
             x[i] += s->xb[i];
         }
     }
+    long layer_time = MiCo_time() - forward_start;
+    long layer_matmul_time = QMATMUL_TIMER;
+    long layer_quant_time = QUANT_TIMER;
     // final rmsnorm
     rmsnorm(x, x, w->rms_final_weight, dim);
     // classifier into logits
@@ -729,14 +743,27 @@ float* forward(Transformer* transformer, int token, int pos) {
     #endif
     long forward_end = MiCo_time();
     #ifdef RISCV_VEXII
-    printf("Final Classifier Time: %ld \n", forward_end - final_start);
-    printf("Forward Time: %ld \n", (forward_end - forward_start));
+    long forward_time = forward_end - forward_start;
+    long final_classifier_time = forward_end - final_start;
+    printf("Final Classifier Time: %ld \n", final_classifier_time);
+    printf("Forward Time: %ld \n", forward_time);
     printf("QMatMul Time: %ld \n", QMATMUL_TIMER);
     printf("Quant Time: %ld \n", QUANT_TIMER);
     printf("Attention Time: %ld \n", ATTENTION_TIMER);
     printf("RMSNorm Time: %ld \n", RMSNORM_TIMER);
     printf("RoPE Time: %ld \n", ROPE_TIMER);
     printf("Softmax Time: %ld \n", SOFTMAX_TIMER);
+
+    const int nlayers = LLAMA_LAYERS;
+
+    long estimated_end2end = layer_time * nlayers + final_classifier_time;
+    printf("Estimated End2End Time %ld \n", estimated_end2end);
+    long end2end_matmul_time = layer_matmul_time * nlayers + (QMATMUL_TIMER - layer_matmul_time);
+    printf("Estimated End2End MatMul Time %ld \n", end2end_matmul_time);
+    long end2end_attention_time = ATTENTION_TIMER * nlayers;
+    printf("Estimated End2End Attention Time %ld \n", end2end_attention_time);
+    long end2end_quant_time = layer_quant_time * nlayers + (QUANT_TIMER - layer_quant_time);
+    printf("Estimated End2End Quant Time %ld \n", end2end_quant_time);
     #endif
     return s->logits;
 }
@@ -1172,7 +1199,7 @@ int main(){
     printf("MiCo Transformer Demo\n");
     float temperature = 0.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
     float topp = 1.0f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-    int start_pos = 32;          // position in the sequence to start at, normally 0
+    int start_pos = CONTEXT_LEN;          // position in the sequence to start at, normally 0
     int steps = start_pos + total_step;     // number of steps to run for
     char *prompt = ""; // prompt string
     unsigned long long rng_seed = 42; // seed rng with time by default
