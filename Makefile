@@ -12,7 +12,9 @@ MICO_SOURCES += $(wildcard $(MICO_DIR)/src/mico/*.c)
 OPT ?=
 TARGET ?= host
 
-CFLAGS = -O3
+CFLAGS ?=
+
+CFLAGS += -O3
 # CFLAGS += -Wall
 LDFLAGS = -lm
 
