@@ -1163,7 +1163,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 }
 
 #ifdef USE_HOST
-const int total_step = 128;
+const int total_step = 0;
 #else
 const int total_step = 1;
 #endif
@@ -1172,7 +1172,7 @@ int main(){
     printf("MiCo Transformer Demo\n");
     float temperature = 0.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
     float topp = 1.0f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-    int start_pos = 32;          // position in the sequence to start at, normally 0
+    int start_pos = 0;          // position in the sequence to start at, normally 0
     int steps = start_pos + total_step;     // number of steps to run for
     char *prompt = ""; // prompt string
     unsigned long long rng_seed = 42; // seed rng with time by default
