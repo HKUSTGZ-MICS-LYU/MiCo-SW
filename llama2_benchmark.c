@@ -1,5 +1,8 @@
 #ifdef RISCV_VEXII
 #include "sim_stdlib.h"
+#ifdef SPRAM
+#include "scratchpad.h"
+#endif
 #else
 #include <stdio.h>
 #endif
@@ -21,7 +24,7 @@
 #include "llama2_config.h"
 
 #ifndef CONTEXT_LEN
-#define CONTEXT_LEN 32
+#define CONTEXT_LEN 128
 #endif
 
 #ifndef LLAMA_LAYERS
@@ -43,7 +46,7 @@ typedef float kv_type;
 #endif
 
 #ifndef LLAMA2_BIN
-#define LLAMA2_BIN "./llama2/llama_model.bin"
+#define LLAMA2_BIN "./llama2/llama_3M_W1A8_bench.bin"
 #endif
 
 INCLUDE_FILE(".rodata", LLAMA2_BIN, llama_model);
@@ -138,6 +141,22 @@ long time_in_ms() {
     return MiCo_time();
 }
 
+void *input_calloc(size_t n, size_t size){
+    #ifdef SPRAM
+    return scratch_calloc(n, size, 4);
+    #else
+    return calloc(n, size);
+    #endif
+}
+
+void input_free(void* ptr){
+    #ifdef SPRAM
+    // scratch_free(ptr);
+    #else
+    free(ptr);
+    #endif
+}
+
 void malloc_run_state(RunState* s, Config* p) {
     // we calloc instead of malloc to keep valgrind happy
     printf("Start Allocating Buffers\n");
@@ -145,12 +164,12 @@ void malloc_run_state(RunState* s, Config* p) {
     int head_size = p->dim / p->n_heads;
     int head_pairs = head_size / 2;
 
-    s->x = calloc(p->dim, sizeof(float));
-    s->xb = calloc(p->dim, sizeof(float));
-    s->xb2 = calloc(p->dim, sizeof(float));
-    s->hb = calloc(p->hidden_dim, sizeof(float));
-    s->hb2 = calloc(p->hidden_dim, sizeof(float));
-    s->q = calloc(p->dim, sizeof(float));
+    s->x = input_calloc(p->dim, sizeof(float));
+    s->xb = input_calloc(p->dim, sizeof(float));
+    s->xb2 = input_calloc(p->dim, sizeof(float));
+    s->hb = input_calloc(p->hidden_dim, sizeof(float));
+    s->hb2 = input_calloc(p->hidden_dim, sizeof(float));
+    s->q = input_calloc(p->dim, sizeof(float));
     #ifdef USE_INT8_KV
     // Allocate Float Buffer for K V
     s->k = calloc(kv_dim, sizeof(float));
@@ -164,11 +183,11 @@ void malloc_run_state(RunState* s, Config* p) {
     s->value_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(kv_type));
     
     printf("Allocate KV Cache of size %ld KB...\n",
-        (p->n_layers * p->seq_len * kv_dim * sizeof(kv_type)) / 1024);
+        (2 * p->n_layers * p->seq_len * kv_dim * sizeof(kv_type)) / 1024);
     
     
-    s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
-    s->logits = calloc(p->vocab_size, sizeof(float));
+    s->att = input_calloc(p->n_heads * p->seq_len, sizeof(float));
+    s->logits = input_calloc(p->vocab_size, sizeof(float));
 
     // RoPE precompute: inv_freq per head (shared across heads)
     s->rope_inv_freq = calloc(1, sizeof(float));
@@ -213,14 +232,17 @@ void malloc_run_state(RunState* s, Config* p) {
 }
 
 void free_run_state(RunState* s) {
-    free(s->x);
-    free(s->xb);
-    free(s->xb2);
-    free(s->hb);
-    free(s->hb2);
-    free(s->q);
-    free(s->att);
-    free(s->logits);
+
+    input_free(s->x);
+    input_free(s->xb);
+    input_free(s->xb2);
+    input_free(s->hb);
+    input_free(s->hb2);
+    input_free(s->q);
+
+    input_free(s->att);
+    input_free(s->logits);
+
     free(s->key_cache);
     free(s->value_cache);
 }
