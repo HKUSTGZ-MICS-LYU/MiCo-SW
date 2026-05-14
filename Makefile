@@ -15,6 +15,7 @@ TARGET ?= host
 CFLAGS ?=
 
 CFLAGS += -O3
+CFLAGS += $(EXTRA_CFLAGS)
 # CFLAGS += -Wall
 LDFLAGS = -lm
 
