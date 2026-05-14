@@ -623,14 +623,6 @@ float* forward(Transformer* transformer, int token, int pos) {
         fmatmul(s->v, s->xb, w->wv + l, dim, kv_dim);
         #endif
         
-        #ifdef USE_INT8_KV
-        // Quantize and store k and v into the kv cache
-        long quant_start = MiCo_time();
-        s->key_scales[l*p->seq_len + pos] = __FP32toQ8(qk_ptr, s->k, kv_dim);
-        s->value_scales[l*p->seq_len + pos] = __FP32toQ8(qv_ptr, s->v, kv_dim);
-        QUANT_TIMER += MiCo_time() - quant_start;
-        #endif
-
         long rope_start = MiCo_time();
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         for (int i = 0; i < dim; i+=2) {
@@ -650,6 +642,15 @@ float* forward(Transformer* transformer, int token, int pos) {
             }
         }
         ROPE_TIMER += MiCo_time() - rope_start;
+
+        #ifdef USE_INT8_KV
+        // Quantize and store k and v (with RoPE applied) into the kv cache
+        long quant_start = MiCo_time();
+        s->key_scales[l*p->seq_len + pos] = __FP32toQ8(qk_ptr, s->k, kv_dim);
+        s->value_scales[l*p->seq_len + pos] = __FP32toQ8(qv_ptr, s->v, kv_dim);
+        QUANT_TIMER += MiCo_time() - quant_start;
+        #endif
+
         // multihead attention. iterate over all heads
         long attn_start = MiCo_time();
 
@@ -663,24 +664,24 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef USE_INT8_KV
         MiCo_multihead_attention_f32_kv8(
-            &output, 
-            &query, 
-            s->key_cache + loff, 
-            s->value_cache + loff, 
+            &output,
+            &query,
+            s->key_cache + loff,
+            s->value_cache + loff,
             s->key_scales + l * p->seq_len,
             s->value_scales + l * p->seq_len,
             s->att,
-            pos, 
+            pos,
             &mha_config
         );
         #else
         MiCo_multihead_attention_f32(
-            &output, 
-            &query, 
-            s->key_cache + loff, 
-            s->value_cache + loff, 
+            &output,
+            &query,
+            s->key_cache + loff,
+            s->value_cache + loff,
             s->att,
-            pos, 
+            pos,
             &mha_config
         );
         #endif
