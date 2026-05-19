@@ -12,6 +12,11 @@
 #define K 32
 #define M 32
 
+#ifdef SPRAM
+extern uint32_t __onchip_data_end;
+extern uint32_t __onchip_data_start;
+#endif
+
 int main(){
     
     Tensor2D_Q8 x, w;

@@ -10,6 +10,7 @@
 #error "bnmatmul_variants_test requires REF functions. Build with OPT including ref."
 #endif
 
+#include "profile.h"
 #include "mico_qnn.h"
 
 typedef struct {
@@ -17,6 +18,10 @@ typedef struct {
     int m;
     int k;
 } MatmulCase;
+
+#ifndef VLEN
+#define VLEN 128
+#endif
 
 static size_t packed_1bit_bytes(size_t elements) {
     return (elements + 7u) >> 3;
@@ -65,6 +70,14 @@ static void fill_packed_2bit(int8_t *data, size_t count, int seed, int allow_cod
     }
 }
 
+static void *aligned_alloc_for_test(size_t size) {
+    return MiCo_alloc(size, MICO_ALIGN);
+}
+
+static void aligned_free_for_test(void *ptr) {
+    MiCo_free(ptr);
+}
+
 static int compare_outputs(
         const char *name,
         const MatmulCase *tc,
@@ -96,17 +109,17 @@ static int run_q8x1_case(const MatmulCase *tc) {
 
     Tensor2D_Q8 x = {0};
     Tensor2D_Q8 w = {0};
-    int32_t *ref_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    int32_t *dut_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    x.data = (int8_t *)malloc(x_count);
-    w.data = (int8_t *)malloc(w_bytes);
+    int32_t *ref_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    int32_t *dut_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    x.data = (int8_t *)aligned_alloc_for_test(x_count);
+    w.data = (int8_t *)aligned_alloc_for_test(w_bytes);
 
     if (!x.data || !w.data || !ref_out || !dut_out) {
         printf("Allocation failed in Q8x1 case N=%d M=%d K=%d\n", tc->n, tc->m, tc->k);
-        free(x.data);
-        free(w.data);
-        free(ref_out);
-        free(dut_out);
+        aligned_free_for_test(x.data);
+        aligned_free_for_test(w.data);
+        aligned_free_for_test(ref_out);
+        aligned_free_for_test(dut_out);
         return -1;
     }
 
@@ -118,13 +131,16 @@ static int run_q8x1_case(const MatmulCase *tc) {
     w.shape[1] = (size_t)tc->k;
 
     MiCo_Q8x1_MatMul_Ref(ref_out, &x, &w);
+    const long start = MiCo_time();
     MiCo_Q8x1_MatMul(dut_out, &x, &w);
+    const long end = MiCo_time();
+    printf("TIME Q8x1 N=%d M=%d K=%d cycles=%ld\n", tc->n, tc->m, tc->k, end - start);
 
     const int err = compare_outputs("Q8x1", tc, ref_out, dut_out);
-    free(x.data);
-    free(w.data);
-    free(ref_out);
-    free(dut_out);
+    aligned_free_for_test(x.data);
+    aligned_free_for_test(w.data);
+    aligned_free_for_test(ref_out);
+    aligned_free_for_test(dut_out);
     return err;
 }
 
@@ -136,17 +152,17 @@ static int run_q1x8_case(const MatmulCase *tc) {
 
     Tensor2D_Q8 x = {0};
     Tensor2D_Q8 w = {0};
-    int32_t *ref_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    int32_t *dut_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    x.data = (int8_t *)malloc(x_bytes);
-    w.data = (int8_t *)malloc(w_count);
+    int32_t *ref_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    int32_t *dut_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    x.data = (int8_t *)aligned_alloc_for_test(x_bytes);
+    w.data = (int8_t *)aligned_alloc_for_test(w_count);
 
     if (!x.data || !w.data || !ref_out || !dut_out) {
         printf("Allocation failed in Q1x8 case N=%d M=%d K=%d\n", tc->n, tc->m, tc->k);
-        free(x.data);
-        free(w.data);
-        free(ref_out);
-        free(dut_out);
+        aligned_free_for_test(x.data);
+        aligned_free_for_test(w.data);
+        aligned_free_for_test(ref_out);
+        aligned_free_for_test(dut_out);
         return -1;
     }
 
@@ -158,13 +174,16 @@ static int run_q1x8_case(const MatmulCase *tc) {
     w.shape[1] = (size_t)tc->k;
 
     MiCo_Q1x8_MatMul_Ref(ref_out, &x, &w);
+    const long start = MiCo_time();
     MiCo_Q1x8_MatMul(dut_out, &x, &w);
+    const long end = MiCo_time();
+    printf("TIME Q1x8 N=%d M=%d K=%d cycles=%ld\n", tc->n, tc->m, tc->k, end - start);
 
     const int err = compare_outputs("Q1x8", tc, ref_out, dut_out);
-    free(x.data);
-    free(w.data);
-    free(ref_out);
-    free(dut_out);
+    aligned_free_for_test(x.data);
+    aligned_free_for_test(w.data);
+    aligned_free_for_test(ref_out);
+    aligned_free_for_test(dut_out);
     return err;
 }
 
@@ -176,17 +195,17 @@ static int run_q8x2_case(const MatmulCase *tc) {
 
     Tensor2D_Q8 x = {0};
     Tensor2D_Q8 w = {0};
-    int32_t *ref_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    int32_t *dut_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    x.data = (int8_t *)malloc(x_count);
-    w.data = (int8_t *)malloc(w_bytes);
+    int32_t *ref_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    int32_t *dut_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    x.data = (int8_t *)aligned_alloc_for_test(x_count);
+    w.data = (int8_t *)aligned_alloc_for_test(w_bytes);
 
     if (!x.data || !w.data || !ref_out || !dut_out) {
         printf("Allocation failed in Q8x2 case N=%d M=%d K=%d\n", tc->n, tc->m, tc->k);
-        free(x.data);
-        free(w.data);
-        free(ref_out);
-        free(dut_out);
+        aligned_free_for_test(x.data);
+        aligned_free_for_test(w.data);
+        aligned_free_for_test(ref_out);
+        aligned_free_for_test(dut_out);
         return -1;
     }
 
@@ -202,13 +221,16 @@ static int run_q8x2_case(const MatmulCase *tc) {
     w.shape[1] = (size_t)tc->k;
 
     MiCo_Q8x2_MatMul_Ref(ref_out, &x, &w);
+    const long start = MiCo_time();
     MiCo_Q8x2_MatMul(dut_out, &x, &w);
+    const long end = MiCo_time();
+    printf("TIME Q8x2 N=%d M=%d K=%d cycles=%ld\n", tc->n, tc->m, tc->k, end - start);
 
     const int err = compare_outputs("Q8x2", tc, ref_out, dut_out);
-    free(x.data);
-    free(w.data);
-    free(ref_out);
-    free(dut_out);
+    aligned_free_for_test(x.data);
+    aligned_free_for_test(w.data);
+    aligned_free_for_test(ref_out);
+    aligned_free_for_test(dut_out);
     return err;
 }
 
@@ -220,17 +242,17 @@ static int run_q2x8_case(const MatmulCase *tc) {
 
     Tensor2D_Q8 x = {0};
     Tensor2D_Q8 w = {0};
-    int32_t *ref_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    int32_t *dut_out = (int32_t *)malloc(out_count * sizeof(int32_t));
-    x.data = (int8_t *)malloc(x_bytes);
-    w.data = (int8_t *)malloc(w_count);
+    int32_t *ref_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    int32_t *dut_out = (int32_t *)aligned_alloc_for_test(out_count * sizeof(int32_t));
+    x.data = (int8_t *)aligned_alloc_for_test(x_bytes);
+    w.data = (int8_t *)aligned_alloc_for_test(w_count);
 
     if (!x.data || !w.data || !ref_out || !dut_out) {
         printf("Allocation failed in Q2x8 case N=%d M=%d K=%d\n", tc->n, tc->m, tc->k);
-        free(x.data);
-        free(w.data);
-        free(ref_out);
-        free(dut_out);
+        aligned_free_for_test(x.data);
+        aligned_free_for_test(w.data);
+        aligned_free_for_test(ref_out);
+        aligned_free_for_test(dut_out);
         return -1;
     }
 
@@ -246,33 +268,54 @@ static int run_q2x8_case(const MatmulCase *tc) {
     w.shape[1] = (size_t)tc->k;
 
     MiCo_Q2x8_MatMul_Ref(ref_out, &x, &w);
+    const long start = MiCo_time();
     MiCo_Q2x8_MatMul(dut_out, &x, &w);
+    const long end = MiCo_time();
+    printf("TIME Q2x8 N=%d M=%d K=%d cycles=%ld\n", tc->n, tc->m, tc->k, end - start);
 
     const int err = compare_outputs("Q2x8", tc, ref_out, dut_out);
-    free(x.data);
-    free(w.data);
-    free(ref_out);
-    free(dut_out);
+    aligned_free_for_test(x.data);
+    aligned_free_for_test(w.data);
+    aligned_free_for_test(ref_out);
+    aligned_free_for_test(dut_out);
     return err;
 }
 
 int main(void) {
 #if BITNET_QUANT == 2
+#ifdef BNCFU_ALIGNED_BNMATMUL_CASES
+    const MatmulCase tests[] = {
+            {16, 16, VLEN},
+    };
+#else
     const MatmulCase tests[] = {
             {1, 1, 8},
             {1, 1, 16},
             {1, 1, 24},
             {2, 3, 32},
             {1, 4, 64},
+#ifdef LARGE_BNMATMUL_CASES
+            {17, 17, 64},
+#endif
     };
+#endif
 #elif BITNET_QUANT != 0
+#ifdef BNCFU_ALIGNED_BNMATMUL_CASES
+    const MatmulCase tests[] = {
+            {16, 16, VLEN},
+    };
+#else
     const MatmulCase tests[] = {
             {1, 1, 4},
             {1, 1, 8},
             {1, 1, 12},
             {2, 3, 16},
             {1, 4, 32},
+#ifdef LARGE_BNMATMUL_CASES
+            {17, 17, 64},
+#endif
     };
+#endif
 #else
 #error "BITNET_QUANT must be non-zero for bnmatmul_variants_test."
 #endif
@@ -281,13 +324,13 @@ int main(void) {
     const int test_count = (int)(sizeof(tests) / sizeof(tests[0]));
 
 #if BITNET_QUANT == 2
-    printf("Running BNRV 1-bit variant checks (%d cases)\n", test_count);
+    printf("Running BitNet 1-bit variant checks (%d cases)\n", test_count);
     for (int i = 0; i < test_count; ++i) {
         failures += (run_q8x1_case(&tests[i]) != 0);
         failures += (run_q1x8_case(&tests[i]) != 0);
     }
 #elif BITNET_QUANT != 0
-    printf("Running BNRV 2-bit path checks (%d cases, BITNET_QUANT=%d)\n", test_count, BITNET_QUANT);
+    printf("Running BitNet 2-bit path checks (%d cases, BITNET_QUANT=%d)\n", test_count, BITNET_QUANT);
     for (int i = 0; i < test_count; ++i) {
         failures += (run_q8x2_case(&tests[i]) != 0);
         failures += (run_q2x8_case(&tests[i]) != 0);
@@ -295,10 +338,10 @@ int main(void) {
 #endif
 
     if (failures == 0) {
-        printf("BNRV matmul variant test PASS (BITNET_QUANT=%d)\n", BITNET_QUANT);
+        printf("BitNet matmul variant test PASS (BITNET_QUANT=%d)\n", BITNET_QUANT);
         return 0;
     }
 
-    printf("BNRV matmul variant test FAIL: %d mismatches\n", failures);
+    printf("BitNet matmul variant test FAIL: %d mismatches\n", failures);
     return 1;
 }
