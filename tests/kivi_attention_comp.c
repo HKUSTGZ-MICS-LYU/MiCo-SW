@@ -139,17 +139,25 @@ int main(){
     Tensor4D_F32 y_kivi_ref = { .shape = {B, I, H, F}, .data = y_kivi_ref_data };
 #endif
 
+    long ref_attn_time = 0;
+
+#ifndef KIVI_ONLY
     // ---- Reference FP32 Attention ----
     MiCo_reset_profilers();
     EXPF_TIMER = 0;
     long start = MiCo_time();
     MiCo_ViT_attention_f32(&y_ref, &q, &k, &v, attn_scale);
     long ref_time = MiCo_time() - start;
+    ref_attn_time = ATTN_TIMER;
     printf("Reference (FP32) Attention:\n");
     printf("  Time: %ld cycles\n", ref_time);
     print_tensor_range("Y_ref", y_ref_data, y_size);
     MiCo_print_profilers();
     printf("\n");
+#else
+    printf("KIVI_ONLY: skipping FP32 reference attention\n\n");
+    long start = 0;
+#endif
 
     // ---- KIVI Attention ----
     MiCo_reset_profilers();
@@ -157,11 +165,28 @@ int main(){
     start = MiCo_time();
     MiCo_ViT_kivi_attention_f32(&y_kivi, &q, &k, &v, attn_scale);
     long kivi_time = MiCo_time() - start;
+    long kivi_attn_time = ATTN_TIMER;
     printf("KIVI (1.58-bit KV) Attention:\n");
     printf("  Time: %ld cycles\n", kivi_time);
     print_tensor_range("Y_kivi", y_kivi_data, y_size);
     MiCo_print_profilers();
     printf("\n");
+
+    long speedup_milli = 0;
+    if (kivi_attn_time > 0){
+        speedup_milli = (ref_attn_time * 1000L) / kivi_attn_time;
+    }
+#ifndef KIVI_ONLY
+    printf("=== Speed Comparison (ATTN_TIMER) ===\n");
+    printf("KIVI_SPEED_COMPARE ref_attn=%ld kivi_attn=%ld speedup_milli=%ld faster=%d\n",
+           ref_attn_time,
+           kivi_attn_time,
+           speedup_milli,
+           kivi_attn_time > 0 && kivi_attn_time < ref_attn_time);
+    printf("\n");
+#else
+    printf("KIVI_ONLY_RESULT kivi_attn=%ld total_time=%ld\n\n", kivi_attn_time, kivi_time);
+#endif
 
 #ifdef KIVI_COMPARE_REF
     // ---- KIVI Reference Schedule ----
@@ -177,6 +202,7 @@ int main(){
     printf("\n");
 #endif
 
+#ifndef KIVI_ONLY
     // ---- Per-element comparison (first few elements) ----
     printf("=== First 8 output elements ===\n");
     printf("  %-12s %-12s %-12s\n", "Ref", "KIVI", "Diff");
@@ -206,6 +232,16 @@ int main(){
     printf("  MSE:                  %.10f\n", kivi_ref_mse);
     printf("  RMSE:                 %.8f\n", sqrtf(kivi_ref_mse));
     printf("  Cosine similarity:    %.8f\n", kivi_ref_cos_sim);
+    int kivi_ref_max_err_u = (int)(kivi_ref_max_err * 1000000.0f + 0.5f);
+    int kivi_ref_mse_u = (int)(kivi_ref_mse * 1000000000.0f + 0.5f);
+    int kivi_ref_cos_u = (int)(kivi_ref_cos_sim * 1000000.0f + 0.5f);
+    printf("KIVI_REF_CHECK max_err_u=%d mse_u=%d cos_u=%d\n",
+           kivi_ref_max_err_u, kivi_ref_mse_u, kivi_ref_cos_u);
+    if (kivi_ref_max_err > 0.0001f){
+        printf("KIVI_REF_CHECK FAIL\n");
+        return 1;
+    }
+    printf("KIVI_REF_CHECK PASS\n");
 #endif
 
     // ---- Per-token error breakdown ----
@@ -234,6 +270,7 @@ int main(){
     printf("  FP32 KV:    %zu bytes\n", kv_fp32_bytes);
     printf("  KIVI KV:    %zu bytes\n", kv_kivi_bytes);
     printf("  Compression: %.1fx\n", (float)kv_fp32_bytes / (float)kv_kivi_bytes);
+#endif
 
     // Cleanup
     free(q_data);
