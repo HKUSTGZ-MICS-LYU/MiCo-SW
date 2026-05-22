@@ -127,9 +127,30 @@ static int run_case(const char *name, size_t n) {
     return err;
 }
 
+static int run_static_case(void) {
+    static float x[Q2T_LANES] __attribute__((aligned(MICO_ALIGN))) = {
+#if Q2T_LANES > 0
+        0.0f, 0.49f, 0.5f, 0.51f,
+#endif
+#if Q2T_LANES > 4
+        -0.49f, -0.5f, -0.51f, 1.0f
+#endif
+    };
+    qbyte ref[(Q2T_LANES + 3) / 4];
+    qbyte dut[(Q2T_LANES + 3) / 4];
+    const size_t n = Q2T_LANES;
+
+    const float ref_scale = scalar_q2t(ref, x, n);
+    memset(dut, 0xa5, sizeof(dut));
+    const float dut_scale = __FP32toQ2T(dut, x, n);
+
+    return compare_bytes("static-exact", ref, dut, n, ref_scale, dut_scale);
+}
+
 int main() {
     int failures = 0;
 
+    failures += run_static_case() != 0;
     failures += run_case("short-tail", Q2T_LANES > 1 ? Q2T_LANES - 1 : 3) != 0;
     failures += run_case("exact", Q2T_LANES) != 0;
     failures += run_case("long-tail", Q2T_LANES + 5) != 0;

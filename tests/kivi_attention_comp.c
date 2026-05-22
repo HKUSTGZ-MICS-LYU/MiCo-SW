@@ -174,7 +174,7 @@ int main(){
 
     long speedup_milli = 0;
     if (kivi_attn_time > 0){
-        speedup_milli = (ref_attn_time * 1000L) / kivi_attn_time;
+        speedup_milli = (long)(((long long)ref_attn_time * 1000LL) / (long long)kivi_attn_time);
     }
 #ifndef KIVI_ONLY
     printf("=== Speed Comparison (ATTN_TIMER) ===\n");
@@ -222,6 +222,12 @@ int main(){
     printf("  MSE:                  %.8f\n", mse);
     printf("  RMSE:                 %.6f\n", sqrtf(mse));
     printf("  Cosine similarity:    %.6f\n", cos_sim);
+    int max_err_u = (int)(max_err * 1000000.0f + 0.5f);
+    int mse_u = (int)(mse * 1000000000.0f + 0.5f);
+    int rmse_u = (int)(sqrtf(mse) * 1000000.0f + 0.5f);
+    int cos_u = (int)(cos_sim * 1000000.0f + 0.5f);
+    printf("KIVI_FP32_CHECK max_err_u=%d mse_u=%d rmse_u=%d cos_u=%d\n",
+           max_err_u, mse_u, rmse_u, cos_u);
 
 #ifdef KIVI_COMPARE_REF
     printf("\n=== Error Metrics (Optimized KIVI vs Reference KIVI Schedule) ===\n");
