@@ -30,6 +30,10 @@
 #include "test_speechcommands.h"
 #endif
 
+#ifdef SPEECHCOMMANDS_2D
+#include "test_speechcommands2d.h"
+#endif
+
 int main(){
 
     Model model;
