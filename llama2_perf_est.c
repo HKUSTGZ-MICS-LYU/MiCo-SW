@@ -73,18 +73,18 @@ typedef struct {
 } QScheme;
 
 typedef struct {
-    unsigned long total;
-    unsigned long qmatmul;
-    unsigned long quant;
-    unsigned long fmatmul;
-    unsigned long attention;
-    unsigned long softmax;
-    unsigned long rmsnorm;
-    unsigned long rope;
-    unsigned long kv_quant;
-    unsigned long swiglu;
-    unsigned long residual;
-    unsigned long lm_head;
+    unsigned long long total;
+    unsigned long long qmatmul;
+    unsigned long long quant;
+    unsigned long long fmatmul;
+    unsigned long long attention;
+    unsigned long long softmax;
+    unsigned long long rmsnorm;
+    unsigned long long rope;
+    unsigned long long kv_quant;
+    unsigned long long swiglu;
+    unsigned long long residual;
+    unsigned long long lm_head;
 } Profile;
 
 typedef struct {
@@ -101,8 +101,8 @@ typedef struct {
 static MatmulCacheEntry matmul_cache[MAX_MATMUL_CACHE];
 static volatile float profile_sink = 0.0f;
 
-static unsigned long profile_time(void) {
-    return (unsigned long)MiCo_time();
+static unsigned long long profile_time(void) {
+    return (unsigned long long)MiCo_time();
 }
 
 static void die(const char *msg) {
@@ -147,7 +147,7 @@ static void profile_zero(Profile *p) {
     memset(p, 0, sizeof(*p));
 }
 
-static void profile_add_scaled(Profile *dst, const Profile *src, unsigned long scale) {
+static void profile_add_scaled(Profile *dst, const Profile *src, unsigned long long scale) {
     dst->total += src->total * scale;
     dst->qmatmul += src->qmatmul * scale;
     dst->quant += src->quant * scale;
@@ -162,7 +162,7 @@ static void profile_add_scaled(Profile *dst, const Profile *src, unsigned long s
     dst->lm_head += src->lm_head * scale;
 }
 
-static Profile profile_div(const Profile *src, unsigned long divisor) {
+static Profile profile_div(const Profile *src, unsigned long long divisor) {
     Profile out;
     profile_zero(&out);
     if (divisor == 0) {
@@ -183,8 +183,15 @@ static Profile profile_div(const Profile *src, unsigned long divisor) {
     return out;
 }
 
+static Profile profile_mul(const Profile *src, unsigned long long scale) {
+    Profile out;
+    profile_zero(&out);
+    profile_add_scaled(&out, src, scale);
+    return out;
+}
+
 static void print_profile(const char *name, const Profile *p) {
-    printf("%s total=%lu qmatmul=%lu quant=%lu fmatmul=%lu attention=%lu softmax=%lu rmsnorm=%lu rope=%lu kv_quant=%lu swiglu=%lu residual=%lu lm_head=%lu\n",
+    printf("%s total=%llu qmatmul=%llu quant=%llu fmatmul=%llu attention=%llu softmax=%llu rmsnorm=%llu rope=%llu kv_quant=%llu swiglu=%llu residual=%llu lm_head=%llu\n",
            name,
            p->total,
            p->qmatmul,
@@ -310,7 +317,7 @@ static Profile profile_rmsnorm(int size) {
     }
     fill_float(x, (size_t)size);
     fill_float(w, (size_t)size);
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         float ss = 0.0f;
         for (int j = 0; j < size; j++) {
@@ -349,7 +356,7 @@ static Profile profile_rope(int dim, int kv_dim, int head_size) {
         cos_tbl[i] = cosf((float)i * 0.001f);
         sin_tbl[i] = sinf((float)i * 0.001f);
     }
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         for (int i = 0; i < dim; i += 2) {
             int kpair = (i % head_size) >> 1;
@@ -388,7 +395,7 @@ static Profile profile_kv_quant(int kv_dim) {
     }
     fill_float(k, (size_t)kv_dim);
     fill_float(v, (size_t)kv_dim);
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         float ks = __FP32toQ8(qk, k, (size_t)kv_dim);
         float vs = __FP32toQ8(qv, v, (size_t)kv_dim);
@@ -416,7 +423,7 @@ static Profile profile_swiglu(int hidden_dim) {
     }
     fill_float(hb, (size_t)hidden_dim);
     fill_float(hb2, (size_t)hidden_dim);
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         for (int i = 0; i < hidden_dim; i++) {
             float val = hb[i];
@@ -443,7 +450,7 @@ static Profile profile_residual(int dim) {
     }
     fill_float(x, (size_t)dim);
     fill_float(y, (size_t)dim);
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         for (int i = 0; i < dim; i++) {
             x[i] += y[i];
@@ -507,7 +514,7 @@ static Profile profile_attention(const Config *cfg, int pos) {
     fill_float(value_cache, (size_t)profile_seq_len * kv_dim);
 #endif
     MiCo_reset_profilers();
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
 #ifdef USE_INT8_KV
         MiCo_multihead_attention_f32_kv8(
@@ -517,8 +524,8 @@ static Profile profile_attention(const Config *cfg, int pos) {
 #endif
     }
     p.total = (profile_time() - start) / PROFILE_REPEATS;
-    p.attention = (unsigned long)ATTN_TIMER / PROFILE_REPEATS;
-    p.softmax = (unsigned long)SOFTMAX_TIMER / PROFILE_REPEATS;
+    p.attention = (unsigned long long)ATTN_TIMER / PROFILE_REPEATS;
+    p.softmax = (unsigned long long)SOFTMAX_TIMER / PROFILE_REPEATS;
     profile_sink += out[0];
 #ifdef USE_INT8_KV
     free(key_cache);
@@ -564,12 +571,12 @@ static Profile profile_matmul_uncached(int n, int d, qtype wq, qtype aq) {
         .wq = safe_wq
     };
     MiCo_reset_profilers();
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         MiCo_bitlinear_f32(&y, &x, &weight, &bias, safe_wq, safe_aq, 1);
     }
-    p.qmatmul = (unsigned long)QMATMUL_TIMER / PROFILE_REPEATS;
-    p.quant = (unsigned long)QUANT_TIMER / PROFILE_REPEATS;
+    p.qmatmul = (unsigned long long)QMATMUL_TIMER / PROFILE_REPEATS;
+    p.quant = (unsigned long long)QUANT_TIMER / PROFILE_REPEATS;
     free(w_data);
 #else
     float *w_data = (float *)malloc((size_t)n * d * sizeof(float));
@@ -579,7 +586,7 @@ static Profile profile_matmul_uncached(int n, int d, qtype wq, qtype aq) {
     fill_float(w_data, (size_t)n * d);
     Tensor2D_F32 weight = { .shape = {(size_t)d, (size_t)n}, .data = w_data };
     MiCo_reset_profilers();
-    unsigned long start = profile_time();
+    unsigned long long start = profile_time();
     for (int r = 0; r < PROFILE_REPEATS; r++) {
         MiCo_linear_f32(&y, &x, &weight, &bias);
     }
@@ -615,7 +622,7 @@ static const Profile *profile_matmul(int n, int d, qtype wq, qtype aq) {
             matmul_cache[i].wq = safe_wq;
             matmul_cache[i].aq = safe_aq;
             matmul_cache[i].profile = profile_matmul_uncached(n, d, safe_wq, safe_aq);
-            printf("MATMUL_SAMPLE n=%d d=%d wq=%u aq=%u total=%lu qmatmul=%lu quant=%lu fmatmul=%lu\n",
+            printf("MATMUL_SAMPLE n=%d d=%d wq=%u aq=%u total=%llu qmatmul=%llu quant=%llu fmatmul=%llu\n",
                    n,
                    d,
                    (unsigned)safe_wq,
@@ -631,7 +638,7 @@ static const Profile *profile_matmul(int n, int d, qtype wq, qtype aq) {
     return NULL;
 }
 
-static void add_layer_matmuls(Profile *phase, const Config *cfg, const QScheme *qscheme, unsigned long token_scale) {
+static void add_layer_matmuls(Profile *phase, const Config *cfg, const QScheme *qscheme, unsigned long long token_scale) {
     int dim = cfg->dim;
     int hidden_dim = cfg->hidden_dim;
     int head_size = dim / cfg->n_heads;
@@ -656,7 +663,7 @@ static void add_layer_matmuls(Profile *phase, const Config *cfg, const QScheme *
     }
 }
 
-static Profile estimate_phase(const char *name, const Config *cfg, const QScheme *qscheme, int tokens, int attention_pos, int lm_heads) {
+static Profile estimate_phase_per_token(const char *name, const Config *cfg, const QScheme *qscheme, int tokens, int attention_pos, int lm_heads) {
     Profile phase;
     profile_zero(&phase);
 
@@ -665,8 +672,8 @@ static Profile estimate_phase(const char *name, const Config *cfg, const QScheme
     int head_size = dim / cfg->n_heads;
     int kv_dim = (cfg->dim * cfg->n_kv_heads) / cfg->n_heads;
     int pos = clamp_pos(attention_pos, cfg->seq_len);
-    unsigned long layer_token_scale = (unsigned long)tokens;
-    unsigned long layer_total_scale = (unsigned long)tokens * (unsigned long)cfg->n_layers;
+    unsigned long long layer_token_scale = 1;
+    unsigned long long layer_total_scale = (unsigned long long)cfg->n_layers;
 
     Profile rms = profile_rmsnorm(dim);
     Profile rope = profile_rope(dim, kv_dim, head_size);
@@ -682,12 +689,20 @@ static Profile estimate_phase(const char *name, const Config *cfg, const QScheme
     profile_add_scaled(&phase, &attention, layer_total_scale);
     profile_add_scaled(&phase, &swiglu, layer_total_scale);
     profile_add_scaled(&phase, &residual, 2 * layer_total_scale);
-    profile_add_scaled(&phase, &rms, (unsigned long)lm_heads);
+    if (lm_heads > 0) {
+        Profile final_rms = profile_mul(&rms, (unsigned long long)lm_heads);
+        Profile final_rms_per_token = profile_div(&final_rms, (unsigned long long)tokens);
+        profile_add_scaled(&phase, &final_rms_per_token, 1);
+    }
 
     const Profile *lm_head = profile_matmul(dim, cfg->vocab_size, 8, 8);
     Profile lm_head_only = *lm_head;
     lm_head_only.lm_head = lm_head_only.total;
-    profile_add_scaled(&phase, &lm_head_only, (unsigned long)lm_heads);
+    if (lm_heads > 0) {
+        Profile lm_head_total = profile_mul(&lm_head_only, (unsigned long long)lm_heads);
+        Profile lm_head_per_token = profile_div(&lm_head_total, (unsigned long long)tokens);
+        profile_add_scaled(&phase, &lm_head_per_token, 1);
+    }
 
     printf("%s_RAW tokens=%d attention_pos=%d lm_heads=%d layer_count=%d\n",
            name, tokens, pos, lm_heads, cfg->n_layers);
@@ -735,10 +750,10 @@ int main(void) {
         prefill_lm_heads = 0;
     }
 
-    Profile prefill = estimate_phase("PREFILL", &cfg, &qscheme, prefill_tokens, prefill_pos, prefill_lm_heads);
-    Profile decode = estimate_phase("DECODE", &cfg, &qscheme, decode_steps, decode_pos, decode_steps);
-    Profile prefill_per_token = profile_div(&prefill, (unsigned long)prefill_tokens);
-    Profile decode_per_token = profile_div(&decode, (unsigned long)decode_steps);
+    Profile prefill_per_token = estimate_phase_per_token("PREFILL", &cfg, &qscheme, prefill_tokens, prefill_pos, prefill_lm_heads);
+    Profile decode_per_token = estimate_phase_per_token("DECODE", &cfg, &qscheme, decode_steps, decode_pos, decode_steps);
+    Profile prefill = profile_mul(&prefill_per_token, (unsigned long long)prefill_tokens);
+    Profile decode = profile_mul(&decode_per_token, (unsigned long long)decode_steps);
     Profile total;
     profile_zero(&total);
     profile_add_scaled(&total, &prefill, 1);
