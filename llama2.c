@@ -23,6 +23,10 @@
 
 #include "llama2_config.h"
 
+#if defined(USE_KIVI_KV) && defined(USE_INT8_KV)
+#error "USE_KIVI_KV and USE_INT8_KV are mutually exclusive"
+#endif
+
 #ifdef QUANTIZED
 typedef Tensor2D_Q8 DataType;
 typedef qbyte WeightType;
@@ -115,6 +119,12 @@ typedef struct {
     float* key_scales; // (layer, seq_len)
     float* value_scales; // (layer, seq_len)
     #endif
+    #ifdef USE_KIVI_KV
+    qbyte* key_cache_q2t; // (layer, group, kv_head, packed_group)
+    qbyte* value_cache_q2t; // (layer, group, kv_head, packed_group)
+    float* key_scales; // (layer, group, kv_head, head_size)
+    float* value_scales; // (layer, group, kv_head, MICO_LLAMA_KV_GROUP_SIZE)
+    #endif
     // RoPE caches
     float* rope_inv_freq; // (head_size/2)
     float* rope_cos; // (seq_len, head_size/2)
@@ -154,6 +164,9 @@ void malloc_run_state(RunState* s, Config* p) {
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
     int head_size = p->dim / p->n_heads;
     int head_pairs = head_size / 2;
+    int n_kv_heads = p->n_kv_heads;
+    int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
+    size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
 
     // Intermediate Data Buffer
     s->x = input_calloc(p->dim, sizeof(float));
@@ -171,11 +184,24 @@ void malloc_run_state(RunState* s, Config* p) {
     printf("Alloacte KV Quant Buffer + Scales of size %ld Bytes...\n",
         (kv_dim * 2 + p->n_layers * p->seq_len * 2) * sizeof(float));
     #endif
+    #ifdef USE_KIVI_KV
+    s->key_cache = calloc((size_t)p->n_layers * MICO_LLAMA_KV_GROUP_SIZE * kv_dim, sizeof(kv_type));
+    s->value_cache = calloc((size_t)p->n_layers * MICO_LLAMA_KV_GROUP_SIZE * kv_dim, sizeof(kv_type));
+    s->key_cache_q2t = calloc((size_t)p->n_layers * n_groups * n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    s->value_cache_q2t = calloc((size_t)p->n_layers * n_groups * n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    s->key_scales = calloc((size_t)p->n_layers * n_groups * n_kv_heads * head_size, sizeof(float));
+    s->value_scales = calloc((size_t)p->n_layers * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE, sizeof(float));
+    printf("Alloacte KIVI KV Cache of size %ld KB...\n",
+        (long)((2 * (size_t)p->n_layers * n_groups * n_kv_heads * packed_group_bytes * sizeof(qbyte) +
+                (size_t)p->n_layers * n_groups * n_kv_heads * (head_size + MICO_LLAMA_KV_GROUP_SIZE) * sizeof(float)) / 1024));
+    printf("Alloacte KIVI FP32 Current Group KV Cache of size %ld KB...\n",
+        (long)((2 * (size_t)p->n_layers * MICO_LLAMA_KV_GROUP_SIZE * kv_dim * sizeof(kv_type)) / 1024));
+    #else
     s->key_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(kv_type));
     s->value_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(kv_type));
-    
     printf("Alloacte KV Cache of size %ld KB...\n",
         (2 * p->n_layers * p->seq_len * kv_dim * sizeof(kv_type)) / 1024);
+    #endif
     
     
     s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
@@ -195,6 +221,12 @@ void malloc_run_state(RunState* s, Config* p) {
         printf("malloc failed!\n");
         exit(EXIT_FAILURE);
     }
+    #ifdef USE_KIVI_KV
+    if (!s->key_cache_q2t || !s->value_cache_q2t || !s->key_scales || !s->value_scales) {
+        printf("malloc failed!\n");
+        exit(EXIT_FAILURE);
+    }
+    #endif
 
     printf("Precomputing RoPE tables (%ld Bytes)...\n", 
         tbl_elems * sizeof(float) * 2);
@@ -236,6 +268,12 @@ void free_run_state(RunState* s) {
     free(s->logits);
     free(s->key_cache);
     free(s->value_cache);
+    #ifdef USE_KIVI_KV
+    free(s->key_cache_q2t);
+    free(s->value_cache_q2t);
+    free(s->key_scales);
+    free(s->value_scales);
+    #endif
 }
 
 size_t init_weight(DataType* w, char* ptr, int n_layers, int n, int m){
@@ -604,6 +642,11 @@ float* forward(Transformer* transformer, int token, int pos) {
         #ifdef USE_INT8_KV
         kv_type* qk_ptr = s->key_cache + loff + pos * kv_dim;
         kv_type* qv_ptr = s->value_cache + loff + pos * kv_dim;
+        #elif defined(USE_KIVI_KV)
+        int local_pos = pos % MICO_LLAMA_KV_GROUP_SIZE;
+        int kivi_loff = l * MICO_LLAMA_KV_GROUP_SIZE * kv_dim;
+        s->k = s->key_cache + kivi_loff + local_pos * kv_dim;
+        s->v = s->value_cache + kivi_loff + local_pos * kv_dim;
         #else
         s->k = s->key_cache + loff + pos * kv_dim;
         s->v = s->value_cache + loff + pos * kv_dim;
@@ -650,6 +693,26 @@ float* forward(Transformer* transformer, int token, int pos) {
         s->value_scales[l*p->seq_len + pos] = __FP32toQ8(qv_ptr, s->v, kv_dim);
         QUANT_TIMER += MiCo_time() - quant_start;
         #endif
+        #ifdef USE_KIVI_KV
+        if (pos > 0 && (pos % MICO_LLAMA_KV_GROUP_SIZE) == 0) {
+            long quant_start = MiCo_time();
+            int completed_group = pos / MICO_LLAMA_KV_GROUP_SIZE - 1;
+            int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
+            int n_kv_heads = p->n_kv_heads;
+            size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+            MiCo_llama_pack_kv_group_q2t(
+                s->key_cache + kivi_loff,
+                s->value_cache + kivi_loff,
+                s->key_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+                s->value_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+                s->key_scales + ((size_t)l * n_groups * n_kv_heads * head_size),
+                s->value_scales + ((size_t)l * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE),
+                completed_group,
+                &mha_config
+            );
+            QUANT_TIMER += MiCo_time() - quant_start;
+        }
+        #endif
 
         // multihead attention. iterate over all heads
         long attn_start = MiCo_time();
@@ -670,6 +733,23 @@ float* forward(Transformer* transformer, int token, int pos) {
             s->value_cache + loff,
             s->key_scales + l * p->seq_len,
             s->value_scales + l * p->seq_len,
+            s->att,
+            pos,
+            &mha_config
+        );
+        #elif defined(USE_KIVI_KV)
+        int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
+        int n_kv_heads = p->n_kv_heads;
+        size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+        MiCo_llama_kivi_attention_f32(
+            &output,
+            &query,
+            s->key_cache + kivi_loff,
+            s->value_cache + kivi_loff,
+            s->key_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+            s->value_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+            s->key_scales + ((size_t)l * n_groups * n_kv_heads * head_size),
+            s->value_scales + ((size_t)l * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE),
             s->att,
             pos,
             &mha_config
