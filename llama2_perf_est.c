@@ -16,6 +16,10 @@
 
 #include "llama2_config.h"
 
+#if defined(USE_KIVI_KV) && defined(USE_INT8_KV)
+#error "USE_KIVI_KV and USE_INT8_KV are mutually exclusive"
+#endif
+
 #ifndef LLAMA2_BIN
 #define LLAMA2_BIN "./llama2/llama_model.bin"
 #endif
@@ -382,9 +386,10 @@ static Profile profile_rope(int dim, int kv_dim, int head_size) {
     return p;
 }
 
-static Profile profile_kv_quant(int kv_dim) {
+static Profile profile_kv_quant(const Config *cfg) {
     Profile p;
     profile_zero(&p);
+    int kv_dim = (cfg->dim * cfg->n_kv_heads) / cfg->n_heads;
 #ifdef USE_INT8_KV
     float *k = (float *)malloc((size_t)kv_dim * sizeof(float));
     float *v = (float *)malloc((size_t)kv_dim * sizeof(float));
@@ -409,6 +414,43 @@ static Profile profile_kv_quant(int kv_dim) {
     free(v);
     free(qk);
     free(qv);
+#elif defined(USE_KIVI_KV)
+    int head_size = cfg->dim / cfg->n_heads;
+    int n_kv_heads = cfg->n_kv_heads;
+    int group_size = MICO_LLAMA_KV_GROUP_SIZE;
+    size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+    float *k = (float *)malloc((size_t)group_size * kv_dim * sizeof(float));
+    float *v = (float *)malloc((size_t)group_size * kv_dim * sizeof(float));
+    qbyte *qk = (qbyte *)calloc((size_t)n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    qbyte *qv = (qbyte *)calloc((size_t)n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    float *ks = (float *)malloc((size_t)n_kv_heads * head_size * sizeof(float));
+    float *vs = (float *)malloc((size_t)n_kv_heads * group_size * sizeof(float));
+    if (!k || !v || !qk || !qv || !ks || !vs) {
+        die("kivi kv quant allocation failed");
+    }
+    fill_float(k, (size_t)group_size * kv_dim);
+    fill_float(v, (size_t)group_size * kv_dim);
+    MiCo_MHA_Config mha_cfg = {
+        .n_heads = cfg->n_heads,
+        .head_size = head_size,
+        .kv_dim = kv_dim,
+        .kv_mul = cfg->n_heads / cfg->n_kv_heads,
+        .seq_len = cfg->seq_len
+    };
+    unsigned long long start = profile_time();
+    for (int r = 0; r < PROFILE_REPEATS; r++) {
+        MiCo_llama_pack_kv_group_q2t(k, v, qk, qv, ks, vs, 0, &mha_cfg);
+    }
+    p.total = (profile_time() - start) / PROFILE_REPEATS;
+    p.kv_quant = p.total;
+    p.quant = p.total;
+    profile_sink += (float)qk[0] + (float)qv[0] + ks[0] + vs[0];
+    free(k);
+    free(v);
+    free(qk);
+    free(qv);
+    free(ks);
+    free(vs);
 #endif
     return p;
 }
@@ -504,6 +546,36 @@ static Profile profile_attention(const Config *cfg, int pos) {
         key_scales[i] = 0.01f;
         value_scales[i] = 0.01f;
     }
+#elif defined(USE_KIVI_KV)
+    int group_size = MICO_LLAMA_KV_GROUP_SIZE;
+    int n_kv_heads = cfg->n_kv_heads;
+    int n_groups = (profile_seq_len + group_size - 1) / group_size;
+    int current_group = pos / group_size;
+    size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+    float *key_cache = (float *)malloc((size_t)group_size * kv_dim * sizeof(float));
+    float *value_cache = (float *)malloc((size_t)group_size * kv_dim * sizeof(float));
+    qbyte *key_cache_q2t = (qbyte *)calloc((size_t)n_groups * n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    qbyte *value_cache_q2t = (qbyte *)calloc((size_t)n_groups * n_kv_heads * packed_group_bytes, sizeof(qbyte));
+    float *key_scales = (float *)malloc((size_t)n_groups * n_kv_heads * head_size * sizeof(float));
+    float *value_scales = (float *)malloc((size_t)n_groups * n_kv_heads * group_size * sizeof(float));
+    if (!key_cache || !value_cache || !key_cache_q2t || !value_cache_q2t || !key_scales || !value_scales) {
+        die("kivi attention allocation failed");
+    }
+    for (int group = 0; group < current_group; group++) {
+        fill_float(key_cache, (size_t)group_size * kv_dim);
+        fill_float(value_cache, (size_t)group_size * kv_dim);
+        MiCo_llama_pack_kv_group_q2t(
+            key_cache,
+            value_cache,
+            key_cache_q2t,
+            value_cache_q2t,
+            key_scales,
+            value_scales,
+            group,
+            &mha_cfg);
+    }
+    fill_float(key_cache, (size_t)group_size * kv_dim);
+    fill_float(value_cache, (size_t)group_size * kv_dim);
 #else
     float *key_cache = (float *)malloc((size_t)profile_seq_len * kv_dim * sizeof(float));
     float *value_cache = (float *)malloc((size_t)profile_seq_len * kv_dim * sizeof(float));
@@ -519,6 +591,19 @@ static Profile profile_attention(const Config *cfg, int pos) {
 #ifdef USE_INT8_KV
         MiCo_multihead_attention_f32_kv8(
             &output, &q, key_cache, value_cache, key_scales, value_scales, att, pos, &mha_cfg);
+#elif defined(USE_KIVI_KV)
+        MiCo_llama_kivi_attention_f32(
+            &output,
+            &q,
+            key_cache,
+            value_cache,
+            key_cache_q2t,
+            value_cache_q2t,
+            key_scales,
+            value_scales,
+            att,
+            pos,
+            &mha_cfg);
 #else
         MiCo_multihead_attention_f32(&output, &q, key_cache, value_cache, att, pos, &mha_cfg);
 #endif
@@ -530,6 +615,13 @@ static Profile profile_attention(const Config *cfg, int pos) {
 #ifdef USE_INT8_KV
     free(key_cache);
     free(value_cache);
+    free(key_scales);
+    free(value_scales);
+#elif defined(USE_KIVI_KV)
+    free(key_cache);
+    free(value_cache);
+    free(key_cache_q2t);
+    free(value_cache_q2t);
     free(key_scales);
     free(value_scales);
 #else
@@ -677,7 +769,7 @@ static Profile estimate_phase_per_token(const char *name, const Config *cfg, con
 
     Profile rms = profile_rmsnorm(dim);
     Profile rope = profile_rope(dim, kv_dim, head_size);
-    Profile kvq = profile_kv_quant(kv_dim);
+    Profile kvq = profile_kv_quant(cfg);
     Profile swiglu = profile_swiglu(hidden_dim);
     Profile residual = profile_residual(dim);
     Profile attention = profile_attention(cfg, pos);
