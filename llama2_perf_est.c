@@ -36,6 +36,18 @@
 #define DECODE_CONTEXT_LEN PREFILL_LEN
 #endif
 
+#ifndef PREFILL_ATTENTION_POS
+#define PREFILL_ATTENTION_POS -1
+#endif
+
+#ifndef DECODE_ATTENTION_POS
+#define DECODE_ATTENTION_POS -1
+#endif
+
+#ifndef ATTENTION_CASE_ID
+#define ATTENTION_CASE_ID 0
+#endif
+
 #ifndef PREFILL_LM_HEADS
 #define PREFILL_LM_HEADS 1
 #endif
@@ -192,6 +204,23 @@ static Profile profile_mul(const Profile *src, unsigned long long scale) {
     profile_zero(&out);
     profile_add_scaled(&out, src, scale);
     return out;
+}
+
+static unsigned long long count_kivi_pack_events(int start_pos, int tokens) {
+#ifdef USE_KIVI_KV
+    unsigned long long events = 0;
+    for (int i = 0; i < tokens; i++) {
+        int pos = start_pos + i;
+        if (pos > 0 && (pos % MICO_LLAMA_KV_GROUP_SIZE) == 0) {
+            events++;
+        }
+    }
+    return events;
+#else
+    (void)start_pos;
+    (void)tokens;
+    return 0;
+#endif
 }
 
 static void print_profile(const char *name, const Profile *p) {
@@ -608,8 +637,9 @@ static Profile profile_attention(const Config *cfg, int pos) {
         MiCo_multihead_attention_f32(&output, &q, key_cache, value_cache, att, pos, &mha_cfg);
 #endif
     }
-    p.total = (profile_time() - start) / PROFILE_REPEATS;
+    unsigned long long wall_total = (profile_time() - start) / PROFILE_REPEATS;
     p.attention = (unsigned long long)ATTN_TIMER / PROFILE_REPEATS;
+    p.total = p.attention ? p.attention : wall_total;
     p.softmax = (unsigned long long)SOFTMAX_TIMER / PROFILE_REPEATS;
     profile_sink += out[0];
 #ifdef USE_INT8_KV
@@ -755,7 +785,7 @@ static void add_layer_matmuls(Profile *phase, const Config *cfg, const QScheme *
     }
 }
 
-static Profile estimate_phase_per_token(const char *name, const Config *cfg, const QScheme *qscheme, int tokens, int attention_pos, int lm_heads) {
+static Profile estimate_phase_per_token(const char *name, const Config *cfg, const QScheme *qscheme, int tokens, int attention_pos, int lm_heads, unsigned long long kv_quant_events) {
     Profile phase;
     profile_zero(&phase);
 
@@ -777,7 +807,15 @@ static Profile estimate_phase_per_token(const char *name, const Config *cfg, con
     add_layer_matmuls(&phase, cfg, qscheme, layer_token_scale);
     profile_add_scaled(&phase, &rms, 2 * layer_total_scale);
     profile_add_scaled(&phase, &rope, layer_total_scale);
+#ifdef USE_KIVI_KV
+    if (kv_quant_events > 0) {
+        Profile kvq_total = profile_mul(&kvq, layer_total_scale * kv_quant_events);
+        Profile kvq_per_token = profile_div(&kvq_total, (unsigned long long)tokens);
+        profile_add_scaled(&phase, &kvq_per_token, 1);
+    }
+#else
     profile_add_scaled(&phase, &kvq, layer_total_scale);
+#endif
     profile_add_scaled(&phase, &attention, layer_total_scale);
     profile_add_scaled(&phase, &swiglu, layer_total_scale);
     profile_add_scaled(&phase, &residual, 2 * layer_total_scale);
@@ -796,8 +834,8 @@ static Profile estimate_phase_per_token(const char *name, const Config *cfg, con
         profile_add_scaled(&phase, &lm_head_per_token, 1);
     }
 
-    printf("%s_RAW tokens=%d attention_pos=%d lm_heads=%d layer_count=%d\n",
-           name, tokens, pos, lm_heads, cfg->n_layers);
+    printf("%s_RAW tokens=%d attention_pos=%d lm_heads=%d layer_count=%d kv_quant_events=%llu\n",
+           name, tokens, pos, lm_heads, cfg->n_layers, kv_quant_events);
     return phase;
 }
 
@@ -806,6 +844,8 @@ int main(void) {
     printf("LLAMA2_BIN=%s\n", LLAMA2_BIN);
     printf("PREFILL_LEN=%d DECODE_STEPS=%d DECODE_CONTEXT_LEN=%d PREFILL_LM_HEADS=%d PROFILE_REPEATS=%d\n",
            PREFILL_LEN, DECODE_STEPS, DECODE_CONTEXT_LEN, PREFILL_LM_HEADS, PROFILE_REPEATS);
+    printf("KV_GROUP_SIZE=%d ATTENTION_CASE_ID=%d PREFILL_ATTENTION_POS=%d DECODE_ATTENTION_POS=%d\n",
+           MICO_LLAMA_KV_GROUP_SIZE, ATTENTION_CASE_ID, PREFILL_ATTENTION_POS, DECODE_ATTENTION_POS);
 
     Config cfg;
     QScheme qscheme;
@@ -826,12 +866,25 @@ int main(void) {
     if (prefill_pos > 0) {
         prefill_pos -= 1;
     }
+    if (PREFILL_ATTENTION_POS >= 0) {
+        prefill_pos = PREFILL_ATTENTION_POS;
+    }
+    prefill_pos = clamp_pos(prefill_pos, cfg.seq_len);
+    if (prefill_pos >= prefill_tokens) {
+        prefill_pos = prefill_tokens - 1;
+    }
 
     int decode_context = DECODE_CONTEXT_LEN;
     if (decode_context < 1) {
         decode_context = prefill_tokens;
     }
     int decode_pos = clamp_pos(decode_context - 1, cfg.seq_len);
+    if (DECODE_ATTENTION_POS >= 0) {
+        decode_pos = clamp_pos(DECODE_ATTENTION_POS, cfg.seq_len);
+        if (decode_pos >= decode_context) {
+            decode_pos = decode_context - 1;
+        }
+    }
 
     int decode_steps = DECODE_STEPS;
     if (decode_steps < 1) {
@@ -842,8 +895,10 @@ int main(void) {
         prefill_lm_heads = 0;
     }
 
-    Profile prefill_per_token = estimate_phase_per_token("PREFILL", &cfg, &qscheme, prefill_tokens, prefill_pos, prefill_lm_heads);
-    Profile decode_per_token = estimate_phase_per_token("DECODE", &cfg, &qscheme, decode_steps, decode_pos, decode_steps);
+    unsigned long long prefill_kv_quant_events = count_kivi_pack_events(0, prefill_tokens);
+    unsigned long long decode_kv_quant_events = count_kivi_pack_events(decode_pos, decode_steps);
+    Profile prefill_per_token = estimate_phase_per_token("PREFILL", &cfg, &qscheme, prefill_tokens, prefill_pos, prefill_lm_heads, prefill_kv_quant_events);
+    Profile decode_per_token = estimate_phase_per_token("DECODE", &cfg, &qscheme, decode_steps, decode_pos, decode_steps, decode_kv_quant_events);
     Profile prefill = profile_mul(&prefill_per_token, (unsigned long long)prefill_tokens);
     Profile decode = profile_mul(&decode_per_token, (unsigned long long)decode_steps);
     Profile total;
