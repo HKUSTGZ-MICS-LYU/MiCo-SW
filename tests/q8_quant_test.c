@@ -16,6 +16,12 @@
 
 #define Q8_VEC_LANES (VLEN / 32)
 
+#ifndef Q8_CUSTOM_N
+#ifdef QUANT_CUSTOM_N
+#define Q8_CUSTOM_N QUANT_CUSTOM_N
+#endif
+#endif
+
 static int round_half_away(float value) {
     return value >= 0.0f ? (int)(value + 0.5f) : (int)(value - 0.5f);
 }
@@ -124,12 +130,16 @@ static int run_case(const char *name, size_t n) {
 int main() {
     int failures = 0;
 
+#ifdef Q8_CUSTOM_N
+    failures += run_case("custom", Q8_CUSTOM_N) != 0;
+#else
     failures += run_case("short-tail", Q8_VEC_LANES > 1 ? Q8_VEC_LANES - 1 : 3) != 0;
     failures += run_case("exact", Q8_VEC_LANES) != 0;
     failures += run_case("long-tail", Q8_VEC_LANES + 5) != 0;
     failures += run_case("vec-128", 128) != 0;
     failures += run_case("vec-512", 512) != 0;
     failures += run_case("vec-2048", 2048) != 0;
+#endif
 
     if(failures) {
         printf("Q8_QUANT_TEST FAIL failures=%d\n", failures);

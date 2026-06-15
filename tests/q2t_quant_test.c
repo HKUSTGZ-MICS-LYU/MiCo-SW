@@ -16,6 +16,12 @@
 
 #define Q2T_LANES (VLEN / 32)
 
+#ifndef Q2T_CUSTOM_N
+#ifdef QUANT_CUSTOM_N
+#define Q2T_CUSTOM_N QUANT_CUSTOM_N
+#endif
+#endif
+
 static int round_half_away(float value) {
     return value >= 0.0f ? (int)(value + 0.5f) : (int)(value - 0.5f);
 }
@@ -150,6 +156,9 @@ static int run_static_case(void) {
 int main() {
     int failures = 0;
 
+#ifdef Q2T_CUSTOM_N
+    failures += run_case("custom", Q2T_CUSTOM_N) != 0;
+#else
     failures += run_static_case() != 0;
     failures += run_case("short-tail", Q2T_LANES > 1 ? Q2T_LANES - 1 : 3) != 0;
     failures += run_case("exact", Q2T_LANES) != 0;
@@ -158,6 +167,7 @@ int main() {
     failures += run_case("vec-512", 512) != 0;
     failures += run_case("vec-2048", 2048) != 0;
     failures += run_case("vec-8192", 8192) != 0;
+#endif
 
     if(failures) {
         printf("Q2T_QUANT_TEST FAIL failures=%d\n", failures);

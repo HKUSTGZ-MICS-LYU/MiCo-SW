@@ -124,6 +124,10 @@ typedef struct {
     qbyte* value_cache_q2t; // (layer, group, kv_head, packed_group)
     float* key_scales; // (layer, group, kv_head, head_size)
     float* value_scales; // (layer, group, kv_head, MICO_LLAMA_KV_GROUP_SIZE)
+    #ifdef KIVI_BNCFU_INT8_BDOT
+    qbyte* key_cache_bdot; // (layer, group, kv_head, token, head_chunk, BNCFU_BYTES)
+    qbyte* value_cache_bdot; // (layer, group, kv_head, feature, group_chunk, BNCFU_BYTES)
+    #endif
     #endif
     // RoPE caches
     float* rope_inv_freq; // (head_size/2)
@@ -167,6 +171,10 @@ void malloc_run_state(RunState* s, Config* p) {
     int n_kv_heads = p->n_kv_heads;
     int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
     size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+    #if defined(USE_KIVI_KV) && defined(KIVI_BNCFU_INT8_BDOT)
+    size_t k_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_K_GROUP_BYTES(head_size);
+    size_t v_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_V_GROUP_BYTES(head_size);
+    #endif
 
     // Intermediate Data Buffer
     s->x = input_calloc(p->dim, sizeof(float));
@@ -191,9 +199,17 @@ void malloc_run_state(RunState* s, Config* p) {
     s->value_cache_q2t = calloc((size_t)p->n_layers * n_groups * n_kv_heads * packed_group_bytes, sizeof(qbyte));
     s->key_scales = calloc((size_t)p->n_layers * n_groups * n_kv_heads * head_size, sizeof(float));
     s->value_scales = calloc((size_t)p->n_layers * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE, sizeof(float));
+    #ifdef KIVI_BNCFU_INT8_BDOT
+    s->key_cache_bdot = calloc((size_t)p->n_layers * n_groups * n_kv_heads * k_bdot_group_bytes, sizeof(qbyte));
+    s->value_cache_bdot = calloc((size_t)p->n_layers * n_groups * n_kv_heads * v_bdot_group_bytes, sizeof(qbyte));
+    #endif
     printf("Alloacte KIVI KV Cache of size %ld KB...\n",
         (long)((2 * (size_t)p->n_layers * n_groups * n_kv_heads * packed_group_bytes * sizeof(qbyte) +
                 (size_t)p->n_layers * n_groups * n_kv_heads * (head_size + MICO_LLAMA_KV_GROUP_SIZE) * sizeof(float)) / 1024));
+    #ifdef KIVI_BNCFU_INT8_BDOT
+    printf("Alloacte KIVI BNCFU KV Layout Cache of size %ld KB...\n",
+        (long)(((size_t)p->n_layers * n_groups * n_kv_heads * (k_bdot_group_bytes + v_bdot_group_bytes) * sizeof(qbyte)) / 1024));
+    #endif
     printf("Alloacte KIVI FP32 Current Group KV Cache of size %ld KB...\n",
         (long)((2 * (size_t)p->n_layers * MICO_LLAMA_KV_GROUP_SIZE * kv_dim * sizeof(kv_type)) / 1024));
     #else
@@ -226,6 +242,12 @@ void malloc_run_state(RunState* s, Config* p) {
         printf("malloc failed!\n");
         exit(EXIT_FAILURE);
     }
+    #ifdef KIVI_BNCFU_INT8_BDOT
+    if (!s->key_cache_bdot || !s->value_cache_bdot) {
+        printf("malloc failed!\n");
+        exit(EXIT_FAILURE);
+    }
+    #endif
     #endif
 
     printf("Precomputing RoPE tables (%ld Bytes)...\n", 
@@ -273,6 +295,10 @@ void free_run_state(RunState* s) {
     free(s->value_cache_q2t);
     free(s->key_scales);
     free(s->value_scales);
+    #ifdef KIVI_BNCFU_INT8_BDOT
+    free(s->key_cache_bdot);
+    free(s->value_cache_bdot);
+    #endif
     #endif
 }
 
@@ -700,6 +726,22 @@ float* forward(Transformer* transformer, int token, int pos) {
             int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
             int n_kv_heads = p->n_kv_heads;
             size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+            #ifdef KIVI_BNCFU_INT8_BDOT
+            size_t k_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_K_GROUP_BYTES(head_size);
+            size_t v_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_V_GROUP_BYTES(head_size);
+            MiCo_llama_pack_kv_group_q2t_bncfu(
+                s->key_cache + kivi_loff,
+                s->value_cache + kivi_loff,
+                s->key_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+                s->value_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+                s->key_scales + ((size_t)l * n_groups * n_kv_heads * head_size),
+                s->value_scales + ((size_t)l * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE),
+                s->key_cache_bdot + ((size_t)l * n_groups * n_kv_heads * k_bdot_group_bytes),
+                s->value_cache_bdot + ((size_t)l * n_groups * n_kv_heads * v_bdot_group_bytes),
+                completed_group,
+                &mha_config
+            );
+            #else
             MiCo_llama_pack_kv_group_q2t(
                 s->key_cache + kivi_loff,
                 s->value_cache + kivi_loff,
@@ -710,6 +752,7 @@ float* forward(Transformer* transformer, int token, int pos) {
                 completed_group,
                 &mha_config
             );
+            #endif
             QUANT_TIMER += MiCo_time() - quant_start;
         }
         #endif
@@ -741,6 +784,25 @@ float* forward(Transformer* transformer, int token, int pos) {
         int n_groups = (p->seq_len + MICO_LLAMA_KV_GROUP_SIZE - 1) / MICO_LLAMA_KV_GROUP_SIZE;
         int n_kv_heads = p->n_kv_heads;
         size_t packed_group_bytes = MICO_LLAMA_KV_PACKED_GROUP_BYTES(head_size);
+        #ifdef KIVI_BNCFU_INT8_BDOT
+        size_t k_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_K_GROUP_BYTES(head_size);
+        size_t v_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_V_GROUP_BYTES(head_size);
+        MiCo_llama_kivi_attention_f32_bncfu(
+            &output,
+            &query,
+            s->key_cache + kivi_loff,
+            s->value_cache + kivi_loff,
+            s->key_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+            s->value_cache_q2t + ((size_t)l * n_groups * n_kv_heads * packed_group_bytes),
+            s->key_scales + ((size_t)l * n_groups * n_kv_heads * head_size),
+            s->value_scales + ((size_t)l * n_groups * n_kv_heads * MICO_LLAMA_KV_GROUP_SIZE),
+            s->key_cache_bdot + ((size_t)l * n_groups * n_kv_heads * k_bdot_group_bytes),
+            s->value_cache_bdot + ((size_t)l * n_groups * n_kv_heads * v_bdot_group_bytes),
+            s->att,
+            pos,
+            &mha_config
+        );
+        #else
         MiCo_llama_kivi_attention_f32(
             &output,
             &query,
@@ -754,6 +816,7 @@ float* forward(Transformer* transformer, int token, int pos) {
             pos,
             &mha_config
         );
+        #endif
         #else
         MiCo_multihead_attention_f32(
             &output,

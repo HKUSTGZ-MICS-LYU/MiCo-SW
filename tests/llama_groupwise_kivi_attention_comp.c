@@ -25,6 +25,12 @@
 #ifndef LLAMA_ATT_HEAD_SIZE
 #define LLAMA_ATT_HEAD_SIZE 64
 #endif
+#ifndef LLAMA_ATT_BENCH_POS
+#define LLAMA_ATT_BENCH_POS -1
+#endif
+#ifndef LLAMA_ATT_REPEATS
+#define LLAMA_ATT_REPEATS 1
+#endif
 
 #define SEQ_LEN LLAMA_ATT_SEQ
 #define N_HEADS LLAMA_ATT_HEADS
@@ -85,9 +91,25 @@ int main(void) {
     printf("=== LLaMa Group-wise KIVI Attention Comparison ===\n");
     printf("Shape: seq=%d n_heads=%d n_kv_heads=%d head_size=%d kv_mul=%d group_size=%d\n",
            SEQ_LEN, N_HEADS, N_KV_HEADS, HEAD_SIZE, KV_MUL, MICO_LLAMA_KV_GROUP_SIZE);
+    printf("Benchmark: pos=%d repeats=%d skip_numeric=%d\n",
+           LLAMA_ATT_BENCH_POS, LLAMA_ATT_REPEATS,
+#ifdef LLAMA_ATT_SKIP_NUMERIC
+           1
+#else
+           0
+#endif
+    );
 
     if (N_HEADS % N_KV_HEADS != 0) {
         printf("ERROR: LLAMA_ATT_HEADS must be divisible by LLAMA_ATT_KV_HEADS\n");
+        return 1;
+    }
+    if (LLAMA_ATT_REPEATS <= 0) {
+        printf("ERROR: LLAMA_ATT_REPEATS must be positive\n");
+        return 1;
+    }
+    if (LLAMA_ATT_BENCH_POS >= SEQ_LEN) {
+        printf("ERROR: LLAMA_ATT_BENCH_POS must be less than seq_len\n");
         return 1;
     }
 
@@ -100,6 +122,12 @@ int main(void) {
     const size_t packed_cache_bytes = (size_t)n_groups * N_KV_HEADS * packed_group_bytes;
     const size_t k_scale_count = (size_t)n_groups * N_KV_HEADS * HEAD_SIZE;
     const size_t v_scale_count = (size_t)n_groups * N_KV_HEADS * MICO_LLAMA_KV_GROUP_SIZE;
+#ifdef KIVI_BNCFU_INT8_BDOT
+    const size_t k_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_K_GROUP_BYTES(HEAD_SIZE);
+    const size_t v_bdot_group_bytes = MICO_LLAMA_KV_BNCFU_V_GROUP_BYTES(HEAD_SIZE);
+    const size_t k_bdot_cache_bytes = (size_t)n_groups * N_KV_HEADS * k_bdot_group_bytes;
+    const size_t v_bdot_cache_bytes = (size_t)n_groups * N_KV_HEADS * v_bdot_group_bytes;
+#endif
 
     float *query_cache = (float *)malloc(q_size * sizeof(float));
     float *key_cache = (float *)malloc(kv_size * sizeof(float));
@@ -114,10 +142,18 @@ int main(void) {
     int8_t *value_q2t = (int8_t *)malloc(packed_cache_bytes);
     float *key_scales = (float *)malloc(k_scale_count * sizeof(float));
     float *value_scales = (float *)malloc(v_scale_count * sizeof(float));
+#ifdef KIVI_BNCFU_INT8_BDOT
+    int8_t *key_bdot = (int8_t *)malloc(k_bdot_cache_bytes);
+    int8_t *value_bdot = (int8_t *)malloc(v_bdot_cache_bytes);
+#endif
 
     if (!query_cache || !key_cache || !value_cache || !y_ref || !y_kivi ||
         !key_group_cache || !value_group_cache ||
-        !att_ref || !att_kivi || !key_q2t || !value_q2t || !key_scales || !value_scales) {
+        !att_ref || !att_kivi || !key_q2t || !value_q2t || !key_scales || !value_scales
+#ifdef KIVI_BNCFU_INT8_BDOT
+        || !key_bdot || !value_bdot
+#endif
+        ) {
         printf("ERROR: malloc failed\n");
         return 1;
     }
@@ -131,6 +167,10 @@ int main(void) {
     memset(value_q2t, 0, packed_cache_bytes);
     memset(key_scales, 0, k_scale_count * sizeof(float));
     memset(value_scales, 0, v_scale_count * sizeof(float));
+#ifdef KIVI_BNCFU_INT8_BDOT
+    memset(key_bdot, 0, k_bdot_cache_bytes);
+    memset(value_bdot, 0, v_bdot_cache_bytes);
+#endif
 
     MiCo_MHA_Config cfg = {
         .n_heads = N_HEADS,
@@ -160,6 +200,20 @@ int main(void) {
                        KV_DIM * sizeof(float));
             }
         }
+#ifdef KIVI_BNCFU_INT8_BDOT
+        MiCo_llama_pack_kv_group_q2t_bncfu(
+            key_group_cache,
+            value_group_cache,
+            key_q2t,
+            value_q2t,
+            key_scales,
+            value_scales,
+            key_bdot,
+            value_bdot,
+            group,
+            &cfg
+        );
+#else
         MiCo_llama_pack_kv_group_q2t(
             key_group_cache,
             value_group_cache,
@@ -170,25 +224,32 @@ int main(void) {
             group,
             &cfg
         );
+#endif
     }
 
     Tensor2D_F32 output = { .shape = {N_HEADS, HEAD_SIZE}, .data = NULL };
     Tensor2D_F32 query = { .shape = {N_HEADS, HEAD_SIZE}, .data = NULL };
 
+    const int bench_single_pos = LLAMA_ATT_BENCH_POS >= 0 ? LLAMA_ATT_BENCH_POS : -1;
+
     MiCo_reset_profilers();
     long start = MiCo_time();
-    for (int pos = 0; pos < SEQ_LEN; pos++) {
-        output.data = y_ref + (size_t)pos * DIM;
-        query.data = query_cache + (size_t)pos * DIM;
-        MiCo_multihead_attention_f32(
-            &output,
-            &query,
-            key_cache,
-            value_cache,
-            att_ref,
-            pos,
-            &cfg
-        );
+    for (int repeat = 0; repeat < LLAMA_ATT_REPEATS; repeat++) {
+        const int first_pos = bench_single_pos >= 0 ? bench_single_pos : 0;
+        const int last_pos = bench_single_pos >= 0 ? bench_single_pos : (SEQ_LEN - 1);
+        for (int pos = first_pos; pos <= last_pos; pos++) {
+            output.data = y_ref + (size_t)pos * DIM;
+            query.data = query_cache + (size_t)pos * DIM;
+            MiCo_multihead_attention_f32(
+                &output,
+                &query,
+                key_cache,
+                value_cache,
+                att_ref,
+                pos,
+                &cfg
+            );
+        }
     }
     long ref_time = MiCo_time() - start;
     long ref_attn_time = ATTN_TIMER;
@@ -202,36 +263,58 @@ int main(void) {
 
     MiCo_reset_profilers();
     start = MiCo_time();
-    for (int pos = 0; pos < SEQ_LEN; pos++) {
-        int group = pos / MICO_LLAMA_KV_GROUP_SIZE;
-        memset(key_group_cache, 0, (size_t)MICO_LLAMA_KV_GROUP_SIZE * KV_DIM * sizeof(float));
-        memset(value_group_cache, 0, (size_t)MICO_LLAMA_KV_GROUP_SIZE * KV_DIM * sizeof(float));
-        for (int local_t = 0; local_t < MICO_LLAMA_KV_GROUP_SIZE; local_t++) {
-            int token = group * MICO_LLAMA_KV_GROUP_SIZE + local_t;
-            if (token <= pos && token < SEQ_LEN) {
-                memcpy(key_group_cache + (size_t)local_t * KV_DIM,
-                       key_cache + (size_t)token * KV_DIM,
-                       KV_DIM * sizeof(float));
-                memcpy(value_group_cache + (size_t)local_t * KV_DIM,
-                       value_cache + (size_t)token * KV_DIM,
-                       KV_DIM * sizeof(float));
+    for (int repeat = 0; repeat < LLAMA_ATT_REPEATS; repeat++) {
+        const int first_pos = bench_single_pos >= 0 ? bench_single_pos : 0;
+        const int last_pos = bench_single_pos >= 0 ? bench_single_pos : (SEQ_LEN - 1);
+        for (int pos = first_pos; pos <= last_pos; pos++) {
+            int group = pos / MICO_LLAMA_KV_GROUP_SIZE;
+            memset(key_group_cache, 0, (size_t)MICO_LLAMA_KV_GROUP_SIZE * KV_DIM * sizeof(float));
+            memset(value_group_cache, 0, (size_t)MICO_LLAMA_KV_GROUP_SIZE * KV_DIM * sizeof(float));
+            for (int local_t = 0; local_t < MICO_LLAMA_KV_GROUP_SIZE; local_t++) {
+                int token = group * MICO_LLAMA_KV_GROUP_SIZE + local_t;
+                if (token <= pos && token < SEQ_LEN) {
+                    memcpy(key_group_cache + (size_t)local_t * KV_DIM,
+                           key_cache + (size_t)token * KV_DIM,
+                           KV_DIM * sizeof(float));
+                    memcpy(value_group_cache + (size_t)local_t * KV_DIM,
+                           value_cache + (size_t)token * KV_DIM,
+                           KV_DIM * sizeof(float));
+                }
             }
+            output.data = y_kivi + (size_t)pos * DIM;
+            query.data = query_cache + (size_t)pos * DIM;
+#ifdef KIVI_BNCFU_INT8_BDOT
+            MiCo_llama_kivi_attention_f32_bncfu(
+                &output,
+                &query,
+                key_group_cache,
+                value_group_cache,
+                key_q2t,
+                value_q2t,
+                key_scales,
+                value_scales,
+                key_bdot,
+                value_bdot,
+                att_kivi,
+                pos,
+                &cfg
+            );
+#else
+            MiCo_llama_kivi_attention_f32(
+                &output,
+                &query,
+                key_group_cache,
+                value_group_cache,
+                key_q2t,
+                value_q2t,
+                key_scales,
+                value_scales,
+                att_kivi,
+                pos,
+                &cfg
+            );
+#endif
         }
-        output.data = y_kivi + (size_t)pos * DIM;
-        query.data = query_cache + (size_t)pos * DIM;
-        MiCo_llama_kivi_attention_f32(
-            &output,
-            &query,
-            key_group_cache,
-            value_group_cache,
-            key_q2t,
-            value_q2t,
-            key_scales,
-            value_scales,
-            att_kivi,
-            pos,
-            &cfg
-        );
     }
     long kivi_time = MiCo_time() - start;
     long kivi_attn_time = ATTN_TIMER;
@@ -243,26 +326,36 @@ int main(void) {
     MiCo_print_profilers();
     printf("\n");
 
-    printf("=== First 8 output elements ===\n");
-    printf("  %-12s %-12s %-12s\n", "Ref", "KIVI", "Diff");
-    for (size_t i = 0; i < 8 && i < y_size; i++) {
-        printf("  %+12.6f %+12.6f %+12.6f\n", y_ref[i], y_kivi[i], y_ref[i] - y_kivi[i]);
-    }
-    printf("\n");
-
-    float max_err = compute_max_abs_error(y_ref, y_kivi, y_size);
-    float mse = compute_mse(y_ref, y_kivi, y_size);
-    float rmse = sqrtf(mse);
-    float cos_sim = compute_cosine_similarity(y_ref, y_kivi, y_size);
     long speedup_milli = 0;
     if (kivi_attn_time > 0) {
         speedup_milli = (long)(((long long)ref_attn_time * 1000LL) / (long long)kivi_attn_time);
     }
 
+#ifndef LLAMA_ATT_SKIP_NUMERIC
+    const size_t compare_base = bench_single_pos >= 0 ? (size_t)bench_single_pos * DIM : 0;
+    const size_t compare_size = bench_single_pos >= 0 ? (size_t)DIM : y_size;
+    printf("=== First 8 output elements ===\n");
+    printf("  %-12s %-12s %-12s\n", "Ref", "KIVI", "Diff");
+    for (size_t i = 0; i < 8 && i < compare_size; i++) {
+        printf("  %+12.6f %+12.6f %+12.6f\n",
+               y_ref[compare_base + i],
+               y_kivi[compare_base + i],
+               y_ref[compare_base + i] - y_kivi[compare_base + i]);
+    }
+    printf("\n");
+
+    float max_err = compute_max_abs_error(y_ref + compare_base, y_kivi + compare_base, compare_size);
+    float mse = compute_mse(y_ref + compare_base, y_kivi + compare_base, compare_size);
+    float rmse = sqrtf(mse);
+    float cos_sim = compute_cosine_similarity(y_ref + compare_base, y_kivi + compare_base, compare_size);
+
     printf("=== Numeric Analysis ===\n");
     printf("LLAMA_KIVI_NUMERIC max_abs_error=%f mse=%f rmse=%f cosine=%f\n",
            max_err, mse, rmse, cos_sim);
     printf("\n");
+#else
+    printf("LLAMA_KIVI_NUMERIC skipped=1\n\n");
+#endif
 
     printf("=== Speed Analysis ===\n");
     printf("LLAMA_KIVI_SPEED ref_total=%ld kivi_total=%ld ref_attn=%ld kivi_attn=%ld speedup=%f speedup_milli=%ld faster=%d\n",
@@ -298,6 +391,10 @@ int main(void) {
     free(value_q2t);
     free(key_scales);
     free(value_scales);
+#ifdef KIVI_BNCFU_INT8_BDOT
+    free(key_bdot);
+    free(value_bdot);
+#endif
 
     return 0;
 }
