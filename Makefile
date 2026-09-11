@@ -15,7 +15,6 @@ TARGET ?= host
 CFLAGS ?=
 
 CFLAGS += -O3
-CFLAGS += $(EXTRA_CFLAGS)
 # CFLAGS += -Wall
 LDFLAGS = -lm
 
@@ -26,7 +25,15 @@ LDFLAGS = -lm
 CFLAGS += -ffunction-sections -fdata-sections
 LDFLAGS += -Wl,--gc-sections
 
-INCLUDES = $(MICO_INCLUDES) ./
+# External sources/headers/flags for a project built against this Makefile
+# (for example the Embench benchmark copied into a run workspace). These are
+# appended, never assigned, so a command-line value cannot drop -march/-mabi.
+EXTRA_SOURCES ?=
+EXTRA_INCLUDES ?=
+EXTRA_CFLAGS ?=
+
+INCLUDES = $(MICO_INCLUDES) ./ $(EXTRA_INCLUDES)
+CFLAGS += $(EXTRA_CFLAGS)
 
 BUILD = build
 MAIN = main
@@ -41,7 +48,7 @@ RISCV_SOURCE ?=
 include $(MICO_DIR)/targets/common.mk
 include $(MICO_DIR)/targets/$(TARGET).mk
 
-OBJS := $(MICO_SOURCES) $(RISCV_SOURCE)
+OBJS := $(MICO_SOURCES) $(RISCV_SOURCE) $(wildcard $(EXTRA_SOURCES))
 OBJS := $(OBJS:.c=.o)
 OBJS := $(OBJS:.S=.o)
 OBJS := $(OBJS:.s=.o)
