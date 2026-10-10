@@ -909,6 +909,17 @@ static Profile estimate_phase_per_token(const char *name, const Config *cfg, con
 }
 
 int main(void) {
+#if defined(RISCV_VEXII) && defined(MICO_RVV)
+    /* Coral RVV: the CRT enables mstatus.FS but not VS. Without VS=Initial the
+     * first vector instruction traps and the core never commits again. This is
+     * platform state setup only; it changes no measured work. */
+    {
+        const uintptr_t vs_mask = (uintptr_t)3u << 9;
+        const uintptr_t vs_initial = (uintptr_t)1u << 9;
+        __asm__ volatile("csrc mstatus, %0\n\tcsrs mstatus, %1"
+                         :: "r"(vs_mask), "r"(vs_initial) : "memory");
+    }
+#endif
     printf("MiCo LLaMa Performance Estimate\n");
     printf("LLAMA2_BIN=%s\n", LLAMA2_BIN);
     printf("PREFILL_LEN=%d DECODE_STEPS=%d DECODE_CONTEXT_LEN=%d PREFILL_LM_HEADS=%d PROFILE_REPEATS=%d\n",
