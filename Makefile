@@ -31,6 +31,9 @@ LDFLAGS += -Wl,--gc-sections
 EXTRA_SOURCES ?=
 EXTRA_INCLUDES ?=
 EXTRA_CFLAGS ?=
+# Flags that must follow target-provided flags such as -march. This is useful
+# for compiler feature macros whose values are derived from -march.
+EXTRA_CFLAGS_LATE ?=
 
 INCLUDES = $(MICO_INCLUDES) ./ $(EXTRA_INCLUDES)
 CFLAGS += $(EXTRA_CFLAGS)
@@ -47,6 +50,7 @@ RISCV_SOURCE ?=
 # Targets
 include $(MICO_DIR)/targets/common.mk
 include $(MICO_DIR)/targets/$(TARGET).mk
+CFLAGS += $(EXTRA_CFLAGS_LATE)
 
 OBJS := $(MICO_SOURCES) $(RISCV_SOURCE) $(wildcard $(EXTRA_SOURCES))
 OBJS := $(OBJS:.c=.o)
@@ -103,5 +107,25 @@ run-host: $(MAIN).elf
 	./$<
 
 all: compile
+
+# Track the opt-in Q8 contract across rebuilds. Objects live under BUILD, but
+# MAIN.elf does not: a second stamp prevents reusing another BUILD's newer ELF.
+# Keep these rules after the original targets so the default goal is unchanged.
+ifeq ($(TARGET),vexii_soc)
+BNCFU_BUILD_CONFIG := $(BUILD)/.bncfu_int8_config
+BNCFU_ELF_CONFIG := $(MAIN).elf.bncfu_config
+BNCFU_CONFIG_VALUES = 'BUILD=$(BUILD)' 'OPT=$(OPT)' 'BNCFU_INT8_MATMUL=$(BNCFU_INT8_MATMUL)' 'BNCFU_WITH_Q2=$(BNCFU_WITH_Q2)'
+
+$(BNCFU_BUILD_CONFIG) $(BNCFU_ELF_CONFIG): FORCE_BNCFU_CONFIG
+	@mkdir -p $(dir $@)
+	@printf '%s\n' $(BNCFU_CONFIG_VALUES) | cmp -s - $@ || printf '%s\n' $(BNCFU_CONFIG_VALUES) > $@
+
+ifneq ($(strip $(OBJS)),)
+$(OBJS): $(BNCFU_BUILD_CONFIG)
+endif
+$(MAIN).elf: $(BNCFU_BUILD_CONFIG) $(BNCFU_ELF_CONFIG)
+.PHONY: FORCE_BNCFU_CONFIG
+FORCE_BNCFU_CONFIG:
+endif
 
 .PHONY: clean compile recompile run-host all debug
